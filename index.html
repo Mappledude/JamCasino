@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JamCasino — Poker Table</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #101935;
+      --ink: #e7ecff;
+      --muted: #9aa3c7;
+      --accent: #7c5cff;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --chip: #1f2a50;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+    }
+    header {
+      padding: 12px 16px; background: linear-gradient(180deg, #0e1430, #0b1020);
+      border-bottom: 1px solid #1a2247; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    }
+    header h1 { font-size: 16px; margin: 0; opacity: .9; font-weight: 600; }
+    .pill { padding: 6px 10px; border-radius: 999px; background: #121b3b; border: 1px solid #1d2856; color: var(--muted); font-size: 12px; }
+    main { display: grid; grid-template-columns: 360px 1fr 420px; gap: 16px; padding: 16px; }
+    @media (max-width: 1100px) {
+      main { grid-template-columns: 1fr; }
+      .col { order: unset !important; }
+    }
+    .panel {
+      background: var(--card); border: 1px solid #1a2247; border-radius: 16px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    }
+    h2 { font-size: 14px; margin: 0 0 10px 0; color: var(--muted); font-weight: 600; letter-spacing:.2px; }
+    button, input, select {
+      background: #0f1736; color: var(--ink); border: 1px solid #29336b;
+      padding: 10px 12px; border-radius: 12px; font-size: 14px;
+    }
+    button { cursor: pointer; }
+    button.primary { background: var(--accent); border-color: #5a3dff; }
+    button.ghost { background: transparent; border-color: #2a356e; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .stack { display: grid; gap: 8px; }
+    .list { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
+    .roomItem { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #0e1632; border: 1px solid #222c62; border-radius: 12px; }
+    .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    /* Debug panel */
+    #debugLog {
+      background: #060a1c; min-height: 160px; max-height: 320px; overflow: auto; border-radius: 12px;
+      border: 1px solid #18204a; padding: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .kbd {
+      background: #0a1230; border: 1px solid #1a255a; border-bottom-width: 3px; padding: 2px 6px; border-radius: 6px; font-size: 12px;
+    }
+    .dealbar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #0e1330; border: 1px dashed #2c376e; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>JamCasino — Player</h1>
+    <span class="pill" id="uidPill">uid: …</span>
+    <span class="pill" id="roomPill">room: (none)</span>
+  </header>
+
+  <main>
+    <!-- Lobby (left) -->
+    <section class="panel col" style="order:1">
+      <h2>Lobby</h2>
+      <div class="stack">
+        <div class="row">
+          <input id="nameInput" placeholder="Your name" style="flex:1" />
+        </div>
+        <div class="row">
+          <input id="codeInput" class="mono" placeholder="Room code (e.g., ABC123)" style="flex:1" />
+          <button id="enterBtn" class="primary">Enter Room</button>
+        </div>
+      </div>
+      <div style="height:10px"></div>
+      <h2>Open Rooms</h2>
+      <div id="roomsList" class="list"></div>
+    </section>
+
+    <!-- Table / Actions (center) -->
+    <section class="panel col" style="order:2">
+      <h2>Table</h2>
+      <div class="dealbar">
+        <div>
+          <div class="row" style="gap:6px">
+            <span class="kbd">phase:</span><span id="phaseLbl">idle</span>
+            <span class="kbd">street:</span><span id="streetLbl">idle</span>
+            <span class="kbd">pot¢:</span><span id="potLbl">0</span>
+          </div>
+          <div class="row" style="gap:6px; margin-top:6px">
+            <span class="kbd">Active players:</span><span id="activeCountLbl">0</span>
+          </div>
+        </div>
+        <div class="row">
+          <button id="dealBtn" class="primary" disabled>Deal</button>
+        </div>
+      </div>
+
+      <div style="height:12px"></div>
+      <div id="playersBox"></div>
+    </section>
+
+    <!-- Debug (right) -->
+    <section class="panel col" style="order:3">
+      <h2>Debug</h2>
+      <div class="row">
+        <button id="clearLogBtn" class="ghost">Clear</button>
+      </div>
+      <div id="debugLog">[info] Debug panel ready.</div>
+    </section>
+  </main>
+
+  <!-- Firebase v10 (ESM) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getAuth, setPersistence, browserSessionPersistence,
+      onAuthStateChanged, signInAnonymously
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import {
+      getFirestore, serverTimestamp, collection, doc, getDocs, onSnapshot,
+      setDoc, updateDoc, deleteDoc, query, orderBy, limit, where
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // --------- Config (use EXACTLY as provided) ----------
+    const firebaseConfig = {
+      apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
+      authDomain: "jamcasino-36b9a.firebaseapp.com",
+      projectId: "jamcasino-36b9a",
+      storageBucket: "jamcasino-36b9a.firebasestorage.app",
+      messagingSenderId: "173219554638",
+      appId: "1:173219554638:web:597524a6a30e71f3a2aa1f"
+    };
+
+    // --------- App init ----------
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // ---------- Tiny logger ----------
+    const $log = document.getElementById('debugLog');
+    const log = (tag, payload) => {
+      const time = new Date().toISOString();
+      $log.textContent += `\n[${time}] ${tag}: ${payload ? JSON.stringify(payload) : ""}`;
+      $log.scrollTop = $log.scrollHeight;
+    };
+    log("info", "Auth starting…");
+
+    // ---------- UI refs ----------
+    const $uid = document.getElementById('uidPill');
+    const $roomPill = document.getElementById('roomPill');
+    const $roomsList = document.getElementById('roomsList');
+    const $name = document.getElementById('nameInput');
+    const $code = document.getElementById('codeInput');
+    const $enter = document.getElementById('enterBtn');
+    const $deal = document.getElementById('dealBtn');
+    const $phase = document.getElementById('phaseLbl');
+    const $street = document.getElementById('streetLbl');
+    const $pot = document.getElementById('potLbl');
+    const $activeCountLbl = document.getElementById('activeCountLbl');
+    const $playersBox = document.getElementById('playersBox');
+    document.getElementById('clearLogBtn').onclick = () => { $log.textContent = "[info] Debug panel ready."; };
+
+    // ---------- State ----------
+    let me = null;          // my auth user
+    let roomCode = null;    // joined room code
+    let unsubRoom = null;   // room listener
+    let unsubPlayers = null;// players listener
+
+    // ---------- Helpers ----------
+    const dollars = (cents) => (cents / 100).toFixed(2);
+    const inCents = (d) => Math.round(Number(d) * 100);
+    const sanitize = (obj) => {
+      // Remove undefined values (flat only)
+      const out = {};
+      Object.keys(obj || {}).forEach(k => {
+        if (obj[k] !== undefined) out[k] = obj[k];
+      });
+      return out;
+    };
+
+    // ---------- Auth with per-tab session ----------
+    await setPersistence(auth, browserSessionPersistence);
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        await signInAnonymously(auth);
+        return;
+      }
+      me = user;
+      $uid.textContent = "uid: " + me.uid;
+      log("auth.ready", { uid: me.uid });
+    });
+
+    // ---------- Lobby: list rooms (active !== false) ----------
+    const roomsCol = collection(db, "rooms");
+    onSnapshot(roomsCol, (snap) => {
+      $roomsList.innerHTML = "";
+      let count = 0;
+      snap.forEach(docSnap => {
+        const r = docSnap.data() || {};
+        if (r.active === false) return; // lobby shows only active rooms
+        count++;
+        const div = document.createElement('div');
+        div.className = "roomItem";
+        div.innerHTML = `
+          <div>
+            <div class="mono" style="font-weight:600">${r.code || docSnap.id}</div>
+            <div style="font-size:12px;color:var(--muted)">
+              $${dollars((r.blinds?.sbC||25))}/$${dollars((r.blinds?.bbC||50))}
+              — Buy-in: $${dollars((r.limits?.minBuyInC||1000))}–$${dollars((r.limits?.maxBuyInC||10000))}
+            </div>
+          </div>
+          <button data-code="${docSnap.id}">Enter</button>`;
+        div.querySelector('button').onclick = () => enterRoom(docSnap.id);
+        $roomsList.appendChild(div);
+      });
+      log("lobby.rooms", { count });
+    });
+
+    // ---------- Enter room (join as player subdoc) ----------
+    async function enterRoom(code) {
+      try {
+        const name = ($name.value || "").trim() || "Player";
+        const buyInD = 10; // $10 starter (display only, stack stored as dollars per spec)
+        log("lobby.join.click", { code, name });
+        const playerDoc = doc(db, "rooms", code, "players", auth.currentUser.uid);
+        await setDoc(playerDoc, sanitize({
+          id: auth.currentUser.uid,
+          name,
+          stack: buyInD,          // dollars (float) on player record
+          hole: [],               // dealt later
+          joinedAt: serverTimestamp(),
+          leftAt: null,
+          folded: false,
+          eliminated: false,
+          allIn: false
+        }), { merge: true });
+        log("lobby.join.success", { code, buyIn: buyInD, name });
+        roomCode = code;
+        $roomPill.textContent = "room: " + roomCode;
+        startRoomListeners();
+      } catch (err) {
+        log("error.join", { message: err.message });
+        alert("Join failed: " + err.message);
+      }
+    }
+    document.getElementById('enterBtn').onclick = () => {
+      const codeVal = ($code.value || "").trim();
+      if (codeVal) enterRoom(codeVal);
+    };
+
+    // ---------- Room + Players listeners ----------
+    function startRoomListeners() {
+      if (!roomCode) return;
+      // Room doc
+      const roomRef = doc(db, "rooms", roomCode);
+      if (unsubRoom) unsubRoom();
+      unsubRoom = onSnapshot(roomRef, (snap) => {
+        if (!snap.exists()) return;
+        const r = snap.data();
+        $phase.textContent = r.phase || "idle";
+        $street.textContent = r.street || "idle";
+        $pot.textContent = String(r.potC || 0);
+        log("room.snapshot", { phase: r.phase || "idle", street: r.street || "idle", potC: r.potC || 0 });
+        decideDealVisibility(r);
+      });
+
+      // Players
+      const playersRef = collection(db, "rooms", roomCode, "players");
+      if (unsubPlayers) unsubPlayers();
+      unsubPlayers = onSnapshot(playersRef, (snap) => {
+        const players = [];
+        snap.forEach(d => players.push(d.data()));
+        players.sort((a,b) => (a.name||"").localeCompare(b.name||""));
+        const active = players.filter(p => !p.leftAt).length;
+        $activeCountLbl.textContent = String(active);
+        renderPlayers(players);
+        log("players.snapshot", { n: players.length, activeCount: active, players: players.map(p => ({ id:p.id, name:p.name, stack:p.stack, leftAt: !!p.leftAt })) });
+      });
+    }
+
+    function renderPlayers(players) {
+      $playersBox.innerHTML = "";
+      if (!players.length) {
+        $playersBox.innerHTML = '<div style="color:var(--muted)">No players yet.</div>';
+        return;
+      }
+      for (const p of players) {
+        const row = document.createElement('div');
+        row.className = "row";
+        row.style.justifyContent = "space-between";
+        row.style.padding = "8px 10px";
+        row.style.border = "1px solid #1a2247";
+        row.style.borderRadius = "10px";
+        row.style.background = "#0c1430";
+        row.innerHTML = `
+          <div><strong>${p.name || "Player"}</strong> <span class="mono" style="color:var(--muted)">(${p.id?.slice(0,6)})</span></div>
+          <div class="mono">$${(p.stack ?? 0).toFixed(2)}</div>
+        `;
+        $playersBox.appendChild(row);
+      }
+    }
+
+    // ---------- Deal button visibility rules (Step 0 scope) ----------
+    async function decideDealVisibility(roomData) {
+      const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
+      const players = [];
+      playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+
+      const active = players.filter(p => !p.leftAt).length;
+      let earliest = null, earliestTs = 1e18;
+      players.forEach(p => {
+        const ts = p.joinedAt?.seconds ?? p.joinedAt?._seconds ?? null;
+        const millis = ts ? ts * 1000 : null;
+        if (millis !== null && millis < earliestTs) { earliestTs = millis; earliest = p.id; }
+      });
+
+      const isIdle = (roomData?.phase || "idle") === "idle";
+      const canShow = isIdle && active >= 2 && earliest === auth.currentUser.uid;
+      $deal.disabled = !canShow;
+      $deal.style.opacity = canShow ? "1" : ".6";
+      log("ui.deal.visibility", {
+        showDeal: canShow, phase: roomData?.phase || "idle", activeCount: active,
+        earliest, me: auth.currentUser.uid, reason: canShow ? "ok" : (active<2 ? "<2 players" : (isIdle? "not-earliest" : "phase!=idle"))
+      });
+    }
+
+    // ---------- Deal click (Step 0: minimal safe write; no nested arrays) ----------
+    $deal.onclick = async () => {
+      if (!roomCode) return;
+      log("ui.deal.click", { room: roomCode });
+
+      // Compose a safe, minimal "preflop ready" state that does NOT write nested arrays.
+      const roomRef = doc(db, "rooms", roomCode);
+      // Figure players + blinds to set pot and order
+      const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
+      const players = [];
+      playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+
+      // Determine dealer = earliest joiner for first hand
+      let earliest = null, earliestTs = 1e18;
+      players.forEach(p => {
+        const ts = p.joinedAt?.seconds ?? p.joinedAt?._seconds ?? null;
+        const millis = ts ? ts * 1000 : null;
+        if (millis !== null && millis < earliestTs) { earliestTs = millis; earliest = p.id; }
+      });
+
+      // Order clockwise starting from dealer (simplified: by joinedAt order)
+      players.sort((a,b) => {
+        const ta = a.joinedAt?.seconds ?? 0, tb = b.joinedAt?.seconds ?? 0;
+        return ta - tb;
+      });
+      const order = players.map(p => p.id);
+      const dealerIdx = Math.max(0, order.indexOf(earliest));
+      const orderPF = order.slice(dealerIdx).concat(order.slice(0, dealerIdx));
+
+      // blinds (fallbacks if room not yet has blinds)
+      // read a fresh snapshot of the room to get blinds
+      const roomSnap = await (await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js")).getDoc(roomRef);
+      const r = roomSnap.exists() ? roomSnap.data() : {};
+      const sbC = r?.blinds?.sbC ?? 25;
+      const bbC = r?.blinds?.bbC ?? 50;
+
+      const sbPid = orderPF[1 % orderPF.length];
+      const bbPid = orderPF[2 % orderPF.length];
+      const committed = {};
+      if (sbPid) committed[sbPid] = sbC;
+      if (bbPid) committed[bbPid] = bbC;
+      const potC = (sbC||0) + (bbC||0);
+
+      log("hand.deal.compose", { dealerId: earliest, sbPid, bbPid, order: orderPF, potC, committed });
+
+      // Safe write: only primitive + plain maps
+      await updateDoc(roomRef, sanitize({
+        phase: "betting",
+        street: "preflop",
+        dealerId: earliest || null,
+        potC: potC,
+        bet: {
+          order: orderPF,
+          turnIdx: 3 % orderPF.length,   // first to act preflop = UTG (after blinds)
+          currentBet: bbC,
+          minBet: bbC,
+          lastRaise: bbC,
+          committed,
+          awaiting: orderPF,             // simplified; advanced logic added later
+          lastAggressor: bbPid || null
+        },
+        // DO NOT touch board/showBoard here to avoid nested array issues for step 0.
+        lastResult: null
+      }));
+      log("hand.deal.success", { code: roomCode, nPlayers: players.length });
+    };
+  </script>
+</body>
+</html>
