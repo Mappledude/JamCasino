@@ -59,6 +59,25 @@
       background: #0a1230; border: 1px solid #1a255a; border-bottom-width: 3px; padding: 2px 6px; border-radius: 6px; font-size: 12px;
     }
     .dealbar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #0e1330; border: 1px dashed #2c376e; border-radius: 12px; }
+
+    /* ---- Table / seats ---- */
+    #tableBox {
+      position: relative;
+      width: 420px; height: 420px; margin: 0 auto; border-radius: 50%;
+      background: #0a1430; border: 2px solid #1a2247;
+    }
+    .seat {
+      position: absolute; width: 80px; height: 80px; text-align: center;
+      transform: translate(-50%, -50%);
+    }
+    .seat .cards { display: flex; justify-content: center; gap: 4px; margin-top: 4px; }
+    .seat .card {
+      width: 32px; height: 48px; border-radius: 4px; background: #fff;
+      display: flex; align-items: center; justify-content: center; color: #000;
+      font-size: 14px; font-weight: 600;
+    }
+    .seat.me { border: 2px solid var(--accent); border-radius: 8px; padding: 2px; }
+    .badge { font-size: 10px; padding: 2px 4px; border-radius: 4px; background: var(--card); border:1px solid #1a2247; }
   </style>
 </head>
 <body>
@@ -106,6 +125,7 @@
       </div>
 
       <div style="height:12px"></div>
+      <div id="tableBox" hidden></div>
       <div id="playersBox"></div>
     </section>
 
@@ -175,6 +195,9 @@
     let roomCode = null;    // joined room code
     let unsubRoom = null;   // room listener
     let unsubPlayers = null;// players listener
+    let lastRoomState = null;
+    let lastPlayers = [];
+    let autoNext = null;
 
     // ---------- Helpers ----------
     const dollars = (cents) => (cents / 100).toFixed(2);
@@ -232,7 +255,11 @@
         const name = ($name.value || "").trim() || "Player";
         const buyInD = 10; // $10 starter (display only, stack stored as dollars per spec)
         log("lobby.join.click", { code, name });
-        const playerDoc = doc(db, "rooms", code, "players", auth.currentUser.uid);
+        const playersRef = collection(db, "rooms", code, "players");
+        const snap = await getDocs(playersRef);
+        const active = snap.docs.filter(d => !(d.data().leftAt)).length;
+        if (active >= 9) { alert("Room full"); return; }
+        const playerDoc = doc(playersRef, auth.currentUser.uid);
         await setDoc(playerDoc, sanitize({
           id: auth.currentUser.uid,
           name,
@@ -267,11 +294,24 @@
       unsubRoom = onSnapshot(roomRef, (snap) => {
         if (!snap.exists()) return;
         const r = snap.data();
+        lastRoomState = r;
         $phase.textContent = r.phase || "idle";
         $street.textContent = r.street || "idle";
         $pot.textContent = String(r.potC || 0);
+        renderSeats(lastPlayers, r);
         log("room.snapshot", { phase: r.phase || "idle", street: r.street || "idle", potC: r.potC || 0 });
         decideDealVisibility(r);
+
+        if (r.phase === "idle" && r.lastResult && !autoNext) {
+          autoNext = setTimeout(() => {
+            autoNext = null;
+            if ($deal.disabled) return;
+            log("auto.deal", { room: roomCode });
+            $deal.click();
+          }, 5000);
+        } else if (r.phase !== "idle" && autoNext) {
+          clearTimeout(autoNext); autoNext = null;
+        }
       });
 
       // Players
@@ -281,9 +321,11 @@
         const players = [];
         snap.forEach(d => players.push(d.data()));
         players.sort((a,b) => (a.name||"").localeCompare(b.name||""));
+        lastPlayers = players;
         const active = players.filter(p => !p.leftAt).length;
         $activeCountLbl.textContent = String(active);
         renderPlayers(players);
+        renderSeats(players, lastRoomState);
         log("players.snapshot", { n: players.length, activeCount: active, players: players.map(p => ({ id:p.id, name:p.name, stack:p.stack, leftAt: !!p.leftAt })) });
       });
     }
@@ -308,6 +350,49 @@
         `;
         $playersBox.appendChild(row);
       }
+    }
+
+    // ---- Table rendering ----
+    function renderSeats(players, room) {
+      const $table = document.getElementById('tableBox');
+      if (!players || !players.length) { $table.hidden = true; return; }
+      $table.hidden = false;
+
+      const n = Math.min(players.length, 9);
+      const board = room?.board || { flop:[], turn:[], river:[] };
+      const show = room?.showBoard || { flop:false, turn:false, river:false };
+
+      const seatsHtml = [];
+      for (let i=0;i<n;i++) {
+        const p = players[i];
+        const ang = (Math.PI * 2 * i / n);
+        const left = 50 + Math.sin(ang) * 40;
+        const top = 50 - Math.cos(ang) * 40;
+        const hole = (p.hole || []);
+        const cardsHtml = (p.id === me.uid) ?
+          hole.map(c=>`<div class="card">${c}</div>`).join('') :
+          '<div class="card">🂠</div><div class="card">🂠</div>';
+        const badges = [];
+        if (room?.dealerId === p.id) badges.push('D');
+        if (room?.bet?.committed && room.bet.committed[p.id]) {
+          const amt = room.bet.committed[p.id];
+          if (amt === (room?.blinds?.sbC || 25)) badges.push('SB');
+          if (amt === (room?.blinds?.bbC || 50)) badges.push('BB');
+        }
+        seatsHtml.push(`<div class="seat ${p.id===me?.uid? 'me':''}" style="left:${left}%;top:${top}%">
+            <div>${p.name||'Player'}</div>
+            <div class="cards">${cardsHtml}</div>
+            <div>${badges.map(b=>`<span class="badge">${b}</span>`).join('')}</div>
+          </div>`);
+      }
+
+      const boardCards = [];
+      if (show.flop) boardCards.push(...board.flop);
+      if (show.turn) boardCards.push(...board.turn);
+      if (show.river) boardCards.push(...board.river);
+      const boardHtml = boardCards.map(c=>`<div class="card">${c}</div>`).join('');
+
+      $table.innerHTML = `<div class="seat" style="left:50%;top:50%;width:auto;height:auto"><div class="cards">${boardHtml}</div></div>` + seatsHtml.join('');
     }
 
     // ---------- Deal button visibility rules (Step 0 scope) ----------
@@ -339,12 +424,11 @@
       if (!roomCode) return;
       log("ui.deal.click", { room: roomCode });
 
-      // Compose a safe, minimal "preflop ready" state that does NOT write nested arrays.
       const roomRef = doc(db, "rooms", roomCode);
-      // Figure players + blinds to set pot and order
       const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
       const players = [];
       playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+      const activePlayers = players.filter(p => !p.leftAt);
 
       // Determine dealer = earliest joiner for first hand
       let earliest = null, earliestTs = 1e18;
@@ -355,16 +439,31 @@
       });
 
       // Order clockwise starting from dealer (simplified: by joinedAt order)
-      players.sort((a,b) => {
+      activePlayers.sort((a,b) => {
         const ta = a.joinedAt?.seconds ?? 0, tb = b.joinedAt?.seconds ?? 0;
         return ta - tb;
       });
-      const order = players.map(p => p.id);
+      const order = activePlayers.map(p => p.id);
       const dealerIdx = Math.max(0, order.indexOf(earliest));
       const orderPF = order.slice(dealerIdx).concat(order.slice(0, dealerIdx));
 
-      // blinds (fallbacks if room not yet has blinds)
-      // read a fresh snapshot of the room to get blinds
+      // Build deck and deal cards
+      const ranks = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+      const suits = ['h','d','c','s'];
+      const deck = [];
+      for (const rnk of ranks) for (const s of suits) deck.push(rnk+s);
+      for (let i = deck.length-1; i>0; i--) { const j = Math.floor(Math.random()* (i+1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+
+      for (const p of activePlayers) {
+        const cards = [deck.pop(), deck.pop()];
+        await updateDoc(doc(db, "rooms", roomCode, "players", p.id), { hole: cards });
+        log("hand.deal.hole", { pid:p.id, cards });
+      }
+      const flop = [deck.pop(), deck.pop(), deck.pop()];
+      const turn = [deck.pop()];
+      const river = [deck.pop()];
+
+      // blinds
       const roomSnap = await (await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js")).getDoc(roomRef);
       const r = roomSnap.exists() ? roomSnap.data() : {};
       const sbC = r?.blinds?.sbC ?? 25;
@@ -379,7 +478,6 @@
 
       log("hand.deal.compose", { dealerId: earliest, sbPid, bbPid, order: orderPF, potC, committed });
 
-      // Safe write: only primitive + plain maps
       await updateDoc(roomRef, sanitize({
         phase: "betting",
         street: "preflop",
@@ -387,18 +485,40 @@
         potC: potC,
         bet: {
           order: orderPF,
-          turnIdx: 3 % orderPF.length,   // first to act preflop = UTG (after blinds)
+          turnIdx: 3 % orderPF.length,
           currentBet: bbC,
           minBet: bbC,
           lastRaise: bbC,
           committed,
-          awaiting: orderPF,             // simplified; advanced logic added later
+          awaiting: orderPF,
           lastAggressor: bbPid || null
         },
-        // DO NOT touch board/showBoard here to avoid nested array issues for step 0.
+        board: { flop, turn, river },
+        showBoard: { flop:false, turn:false, river:false },
+        handId: Date.now(),
         lastResult: null
       }));
-      log("hand.deal.success", { code: roomCode, nPlayers: players.length });
+      log("hand.deal.success", { code: roomCode, nPlayers: activePlayers.length });
+
+      // auto advance streets and finish hand (very simplified)
+      setTimeout(()=>updateDoc(roomRef, { street:"flop", showBoard: { flop:true, turn:false, river:false }}), 1000);
+      setTimeout(()=>updateDoc(roomRef, { street:"turn", showBoard: { flop:true, turn:true, river:false }}), 2000);
+      setTimeout(()=>updateDoc(roomRef, { street:"river", showBoard: { flop:true, turn:true, river:true }}), 3000);
+      setTimeout(async ()=>{
+        const winnerId = orderPF[0];
+        const winner = activePlayers.find(p=>p.id===winnerId);
+        if (winner) {
+          await updateDoc(doc(db, "rooms", roomCode, "players", winnerId), { stack: (winner.stack||0) + potC/100 });
+        }
+        const nextDealer = orderPF[1 % orderPF.length];
+        await updateDoc(roomRef, sanitize({
+          phase:"idle", street:"idle", dealerId: nextDealer,
+          potC:0, bet:null,
+          board:{flop:[],turn:[],river:[]}, showBoard:{flop:false,turn:false,river:false},
+          lastResult:{ winnerId, potC }
+        }));
+        log("hand.end", { winnerId, potC });
+      }, 4000);
     };
   </script>
 </body>

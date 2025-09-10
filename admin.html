@@ -195,6 +195,7 @@
     };
 
     $deleteAll.onclick = async () => {
+      if (!confirm('Delete ALL rooms?')) return;
       const snap = await getDocs(roomsCol);
       let n = 0;
       for (const d of snap.docs) { await deleteDoc(d.ref); n++; }
