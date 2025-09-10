@@ -3,22 +3,33 @@ name: Deploy to Firebase Hosting
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v4
 
-      # Optional: if you ever need a build step, add it above the deploy step.
-      # - run: echo "No build step needed for static HTML"
-
-      - name: Deploy to Firebase Hosting
-        uses: FirebaseExtended/action-hosting-deploy@v0
+      # Authenticate to Google Cloud using your service account JSON in the secret
+      - id: auth
+        uses: google-github-actions/auth@v2
         with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: jamcasino-36b9a
-          channelId: live
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Install firebase-tools
+        run: npm i -g firebase-tools
+
+      - name: Show firebase-tools version
+        run: firebase --version
+
+      - name: Deploy to Firebase Hosting (live)
+        run: >
+          firebase deploy
+          --only hosting:jamcasino-36b9a
+          --project jamcasino-36b9a
+          --non-interactive
