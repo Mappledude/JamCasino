@@ -27,13 +27,13 @@ export class Debug {
       });
     }
 
-    this.gateToggleEl = document.getElementById('gate-inspector-toggle');
+    this.gateToggleEl = document.getElementById('btn-gate-inspector');
     this.gateInspectorEl = document.getElementById('gating-inspector');
     this.gateInspectorOn = false;
     if (this.gateToggleEl) {
       this.gateToggleEl.addEventListener('click', () => {
         this.gateInspectorOn = !this.gateInspectorOn;
-        if (this.gateInspectorEl) this.gateInspectorEl.style.display = this.gateInspectorOn ? 'block' : 'none';
+        if (this.gateInspectorEl) this.gateInspectorEl.classList.toggle('hidden', !this.gateInspectorOn);
         this.log('ui.debug.gateInspector.toggle', { enabled: this.gateInspectorOn });
       });
     }

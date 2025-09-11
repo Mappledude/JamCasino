@@ -15,6 +15,8 @@ import {
   collection, addDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
+const BUILD_TAG = "UI-RED-v1";
+
 const PRESENCE = {
   HEARTBEAT_MS: 10_000,
   STALE_AFTER_MS: 45_000,
@@ -45,7 +47,6 @@ let myHandId = null;
 let myHandCards = null;
 let upcomingDealerPid = null;
 
-document.getElementById('debug-room').textContent = roomCode ?? '—';
 
 const debug = new Debug({
   roomCodeGetter: () => roomCode,
@@ -55,6 +56,10 @@ window.DEBUG = debug;
 
 debug.log('app.init', { ua: navigator.userAgent });
 debug.log('ui.debug.ready', { panel: 'open' });
+
+const buildTagEl = document.getElementById('build-tag');
+if (buildTagEl) buildTagEl.textContent = BUILD_TAG;
+debug.log('app.build', { tag: BUILD_TAG });
 
 const firebaseConfig = {
   apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
@@ -79,28 +84,16 @@ onAuthStateChanged(auth, (user) => {
 
   const playerSpan = document.getElementById('player-id');
   if (playerSpan) playerSpan.textContent = user.uid;
-  const debugPlayer = document.getElementById('debug-player');
-  if (debugPlayer) debugPlayer.textContent = user.uid;
 
   window.DEBUG?.log('firebase.init.ok', { appName: app.name });
   window.DEBUG?.log('auth.anon.signIn.success', { uid: user.uid, persistence: 'session' });
   window.DEBUG?.log('auth.state', { uid: user.uid });
 });
 
-document.getElementById('asset-check').addEventListener('click', () => {
-  verifyCardAssets();
-});
-
-document.getElementById('preview-btn').addEventListener('click', () => {
-  const rank = document.getElementById('test-rank').value;
-  const suit = document.getElementById('test-suit').value;
-  const src = resolveCardSrc(rank, suit);
-  const img = document.createElement('img');
-  img.src = src;
-  const container = document.getElementById('card-preview');
-  container.innerHTML = '';
-  container.appendChild(img);
-});
+  const assetBtn = document.getElementById('btn-asset-check');
+  if (assetBtn) assetBtn.addEventListener('click', () => {
+    verifyCardAssets();
+  });
 
 // --- Gated controls ---
 const prefEl = document.getElementById('variant-pref');
@@ -134,13 +127,14 @@ lockInfoEl.id = 'lock-info';
 lockInfoEl.className = 'lock-info';
 headerEl?.appendChild(lockInfoEl);
 
-const actionBar = document.querySelector('#my-board .action-bar');
-const foldBtn = actionBar?.children[0] || null;
-const checkBtn = actionBar?.children[1] || null;
-const betInput = actionBar?.children[2] || null;
-const betBtn = actionBar?.children[3] || null;
+const foldBtn = document.getElementById('btn-fold');
+const callBtn = document.getElementById('btn-call');
+const betInput = document.getElementById('bet-amount');
+const raiseBtn = document.getElementById('btn-raise');
+const turnHint = document.getElementById('turn-hint');
+const myConsole = document.getElementById('my-console');
 
-const potEl = document.getElementById('pot');
+const potEl = document.getElementById('pot-pill');
 
 const uiDealLock = { active: false, timer: null, startAt: 0, TTL_MS: 3000 };
 function setUiDealLock(on) {
@@ -607,16 +601,16 @@ function renderActionControls(room) {
   const myStack = betting.stacks?.[uid] || 0;
   const canAct = betting.in?.[uid] && !betting.allIn?.[uid];
   if (foldBtn) foldBtn.disabled = !(myTurn && canAct);
-  if (checkBtn) {
-    checkBtn.disabled = !(myTurn && canAct);
+  if (callBtn) {
+    callBtn.disabled = !(myTurn && canAct);
     const label = toCall === 0 ? 'Check' : `Call ${Math.min(toCall, myStack)}`;
-    checkBtn.textContent = label;
-    checkBtn.title = myTurn ? '' : 'Not your turn';
+    callBtn.textContent = label;
+    callBtn.title = myTurn ? '' : 'Not your turn';
   }
-  if (betBtn) {
-    betBtn.disabled = !(myTurn && canAct);
+  if (raiseBtn) {
+    raiseBtn.disabled = !(myTurn && canAct);
     const label = (betting.currentBet || 0) === 0 ? 'Bet' : 'Raise';
-    betBtn.textContent = label;
+    raiseBtn.textContent = label;
   }
   if (betInput) {
     betInput.disabled = !(myTurn && canAct);
@@ -624,8 +618,8 @@ function renderActionControls(room) {
     betInput.min = min;
     betInput.max = committed + myStack;
   }
-  const myBoard = document.getElementById('my-board');
-  if (myBoard) myBoard.classList.toggle('my-turn', myTurn);
+  if (myConsole) myConsole.classList.toggle('my-turn', myTurn);
+  if (turnHint) turnHint.classList.toggle('hidden', !myTurn);
   window.DEBUG?.log('ui.actions.gate.evaluate', {
     myTurn,
     toCall,
@@ -912,8 +906,8 @@ if (foldBtn) {
   });
 }
 
-if (checkBtn) {
-  checkBtn.addEventListener('click', async () => {
+  if (callBtn) {
+    callBtn.addEventListener('click', async () => {
     const uid = auth.currentUser?.uid;
     try {
       const txRes = await runTransaction(db, async (tx) => {
@@ -972,8 +966,8 @@ if (checkBtn) {
   });
 }
 
-if (betBtn) {
-  betBtn.addEventListener('click', async () => {
+  if (raiseBtn) {
+    raiseBtn.addEventListener('click', async () => {
     const uid = auth.currentUser?.uid;
     const desired = parseInt(betInput?.value || '0', 10);
     try {
@@ -1279,7 +1273,6 @@ async function submitJoin(mode) {
     window.APP = window.APP || {};
     window.APP.roomCode = code;
     document.getElementById('room-code').textContent = code;
-    document.getElementById('debug-room').textContent = code;
     debug.log('room.join.success', { code, seat });
     if (created) {
       debug.log('room.create.success', { code });
@@ -1476,25 +1469,17 @@ function renderRoom(data) {
     if (!seatEl) continue;
     const nameEl = seatEl.querySelector('.name');
     const stackEl = seatEl.querySelector('.stack');
-    const committedEl = seatEl.querySelector('.committed');
+    const statusDot = seatEl.querySelector('.status-dot');
     const badgesEl = seatEl.querySelector('.badges');
     const sIdx = serverSeatForUi(uiIndex);
     const pid = data.seats ? data.seats[sIdx] : null;
     if (pid) {
       const player = data.players?.[pid] || {};
       nameEl.textContent = pid === uid ? `${player.displayName || 'Player'} (you)` : (player.displayName || 'Player');
-      let dotEl = seatEl.querySelector('.status-dot');
-      if (!dotEl) {
-        dotEl = document.createElement('span');
-        dotEl.className = 'status-dot';
-        nameEl.after(dotEl);
-      }
-      dotEl.className = `status-dot ${player.active ? 'active' : 'inactive'}`;
+      if (statusDot) statusDot.className = `status-dot ${player.active ? 'active' : ''}`;
       const bet = data.hand?.betting || {};
       const stack = bet.stacks?.[pid];
-      const committed = bet.committed?.[pid] || 0;
       if (stack != null) stackEl.textContent = `$${stack}`; else stackEl.textContent = '$—';
-      if (committedEl) committedEl.textContent = `in pot: $${committed}`;
       seatEl.classList.toggle('me', pid === uid);
       seatEl.classList.toggle('folded', bet.in && bet.in[pid] === false);
       let allInEl = badgesEl.querySelector('.all-in-badge');
@@ -1509,46 +1494,55 @@ function renderRoom(data) {
       } else if (allInEl) {
         allInEl.remove();
       }
-      let rankEl = seatEl.querySelector('.rank-label');
-      if (data.state === 'idle' && data.lastResult?.id) {
-        const label = data.lastResult?.result?.rankLabels?.[pid] || '';
-        if (label) {
-          if (!rankEl) {
-            rankEl = document.createElement('div');
-            rankEl.className = 'rank-label';
-            seatEl.appendChild(rankEl);
-          }
-          rankEl.textContent = label;
-        } else if (rankEl) {
-          rankEl.remove();
-        }
-      } else if (rankEl) {
-        rankEl.remove();
-      }
     } else {
-      nameEl.textContent = `Seat ${sIdx + 1} (empty)`;
-      const dotEl = seatEl.querySelector('.status-dot');
-      if (dotEl) dotEl.remove();
+      nameEl.textContent = `Seat ${sIdx + 1}`;
+      if (statusDot) statusDot.className = 'status-dot';
       stackEl.textContent = '$—';
-      if (committedEl) committedEl.textContent = 'in pot: $0';
       seatEl.classList.remove('me');
       seatEl.classList.remove('folded');
-      const rankEl = seatEl.querySelector('.rank-label');
-      if (rankEl) rankEl.remove();
+      const allInEl = badgesEl.querySelector('.all-in-badge');
+      if (allInEl) allInEl.remove();
     }
     seatEl.classList.toggle('turn', pid && pid === currentPid);
 
     let dealerEl = badgesEl.querySelector('.dealer-btn');
-    if ((data.state === 'idle' || data.state === 'dealLocked') && derivedDealerSeat != null && sIdx === derivedDealerSeat) {
+    let sbEl = badgesEl.querySelector('.sb-btn');
+    let bbEl = badgesEl.querySelector('.bb-btn');
+    const dealerSeat = data.state === 'hand' ? data.hand?.dealerSeat : derivedDealerSeat;
+    if (dealerSeat != null && sIdx === dealerSeat) {
       if (!dealerEl) {
         dealerEl = document.createElement('span');
         dealerEl.className = 'dealer-btn';
         dealerEl.textContent = 'D';
         badgesEl.appendChild(dealerEl);
       }
-      dealerEl.style.display = 'inline-block';
+    } else if (dealerEl) {
+      dealerEl.remove();
+    }
+    if (data.state === 'hand' && pid) {
+      if (pid === data.hand?.sbPid) {
+        if (!sbEl) {
+          sbEl = document.createElement('span');
+          sbEl.className = 'sb-btn';
+          sbEl.textContent = 'SB';
+          badgesEl.appendChild(sbEl);
+        }
+      } else if (sbEl) {
+        sbEl.remove();
+      }
+      if (pid === data.hand?.bbPid) {
+        if (!bbEl) {
+          bbEl = document.createElement('span');
+          bbEl.className = 'bb-btn';
+          bbEl.textContent = 'BB';
+          badgesEl.appendChild(bbEl);
+        }
+      } else if (bbEl) {
+        bbEl.remove();
+      }
     } else {
-      if (dealerEl) dealerEl.remove();
+      if (sbEl) sbEl.remove();
+      if (bbEl) bbEl.remove();
     }
 
     const existingHole = seatEl.querySelector('.hole-cards');
@@ -1644,7 +1638,7 @@ function renderRoom(data) {
 }
 
 function renderMyHoleCards(cards = [], holeCount = 0) {
-  const container = document.querySelector('#my-board .hole-cards');
+  const container = document.querySelector('#my-console .cards');
   if (!container) return;
   for (let i = 0; i < 4; i++) {
     let slot = container.children[i];
