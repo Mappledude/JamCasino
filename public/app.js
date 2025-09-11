@@ -967,6 +967,52 @@ function isRoundClosed(bet) {
   return participants.every(pid => !bet.in[pid] || bet.allIn?.[pid] || ((bet.committed?.[pid] || 0) === currentBet));
 }
 
+function everyoneMatchedOrAllIn(room){
+  const b = room.hand.betting;
+  const pids = room.hand.participants || [];
+  return pids.every(pid => !b.in?.[pid] || b.allIn?.[pid] || b.committed?.[pid] === b.currentBet);
+}
+async function onActionCommitted(roomRef){
+  await runTransaction(db, async tx => {
+    const snap = await tx.get(roomRef);
+    const room = snap.data();
+    if (room?.state !== 'hand' || !room.hand?.betting) return;
+    const b = room.hand.betting, t = room.hand.turn;
+    if (b.roundClosed) return;
+    if (everyoneMatchedOrAllIn(room) && t.order[(t.index % t.order.length)] === b.untilPid){
+      tx.update(roomRef, { 'hand.betting.roundClosed': true });
+      window.DEBUG?.log('betting.round.closed', { street: room.hand.status });
+    }
+  });
+}
+async function maybeAdvanceStreetAsDealer(roomRef, uid){
+  await runTransaction(db, async tx => {
+    const snap = await tx.get(roomRef); const room = snap.data(); if (!room?.hand) return;
+    if (room.hand.dealerPid !== uid) return; const b = room.hand.betting;
+    if (!b?.roundClosed) return;
+    const status = room.hand.status;
+    const deckSeed = room.code + room.hand.id;
+    const deck = shuffledDeck(deckSeed);
+    let append = [];
+    if (status === 'preflop') append = deck.slice(0,3);
+    else if (status === 'flop') append = deck.slice(3,4);
+    else if (status === 'turn') append = deck.slice(4,5);
+    else if (status === 'river') return;
+    const nextStatus = status === 'preflop' ? 'flop' : status === 'flop' ? 'turn' : 'river';
+    tx.update(roomRef, {
+      'hand.board': (room.hand.board || []).concat(append),
+      'hand.status': nextStatus,
+      'hand.betting.currentBet': 0,
+      'hand.betting.lastRaiseSize': b.bb,
+      'hand.betting.minRaiseTo': b.bb,
+      'hand.betting.committed': Object.fromEntries(Object.keys(b.committed || {}).map(pid => [pid,0])),
+      'hand.betting.roundClosed': false,
+      'hand.turn.index': 0,
+      'hand.turn.untilPid': null
+    });
+    window.DEBUG?.log('street.advance.tx.success', { status: nextStatus, appended: append.length });
+  });
+}
 if (foldBtn) {
   foldBtn.addEventListener('click', async () => {
     const uid = auth.currentUser?.uid;
@@ -995,6 +1041,7 @@ if (foldBtn) {
       });
       const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
       await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: 'fold', ts: serverTimestamp() });
+      await onActionCommitted(currentRoomRef);
       window.DEBUG?.log('action.fold.success', { pid: uid });
     } catch (e) {
       window.DEBUG?.log('action.fold.error', { code: e.code || 'UNKNOWN' });
@@ -1056,6 +1103,7 @@ if (foldBtn) {
       });
       const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
       await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: txRes.type, amount: txRes.amount, ts: serverTimestamp() });
+      await onActionCommitted(currentRoomRef);
     } catch (e) {
       window.DEBUG?.log('action.check.error', { code: e.code || 'UNKNOWN' });
     }
@@ -1112,6 +1160,7 @@ if (foldBtn) {
       });
       const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
       await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: txRes.type, to: txRes.to, delta: txRes.delta, ts: serverTimestamp() });
+      await onActionCommitted(currentRoomRef);
     } catch (e) {
       window.DEBUG?.log('action.bet.error', { code: e.code || 'UNKNOWN' });
     }
@@ -1368,6 +1417,7 @@ async function joinRoomByCode(code){
     const playersCount = data.players ? Object.keys(data.players).length : 0;
     const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
     debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
+    if (data?.hand?.betting?.roundClosed) { maybeAdvanceStreetAsDealer(currentRoomRef, auth.currentUser?.uid); }
   });
   debug.log('room.join.success', { code, seat, displayName: myName });
 }
@@ -1491,6 +1541,7 @@ async function submitJoin(mode) {
       const playersCount = data.players ? Object.keys(data.players).length : 0;
       const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
       debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
+      if (data?.hand?.betting?.roundClosed) { maybeAdvanceStreetAsDealer(currentRoomRef, auth.currentUser?.uid); }
     });
   } catch (err) {
     if (err.message === 'ROOM_FULL') {

@@ -11,6 +11,20 @@
     <div id="wallet-badge">$<span id="wallet-balance">0</span></div>
   </header>
   <main id="rooms-grid" class="rooms-grid"></main>
-  <script type="module" src="/lobby.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
+      authDomain: "jamcasino-36b9a.firebaseapp.com",
+      projectId: "jamcasino-36b9a",
+      storageBucket: "jamcasino-36b9a.firebasestorage.app",
+      messagingSenderId: "173219554638",
+      appId: "1:173219554638:web:597524a6a30e71f3a2aa1f"
+    };
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+  </script>
+  <script src="/lobby.js"></script>
 </body>
 </html>
