@@ -103,11 +103,9 @@ document.getElementById('preview-btn').addEventListener('click', () => {
 
 // --- Gated controls ---
 const dealBtn = document.getElementById('deal');
-const variantSelect = document.getElementById('variant');
-if (variantSelect) {
-  if (variantSelect.options[0]) variantSelect.options[0].value = 'HE';
-  if (variantSelect.options[1]) variantSelect.options[1].value = 'OMA';
-}
+const variantEl = document.getElementById('variant');
+const variantChip = document.getElementById('variant-chip');
+const VALID_VARIANTS = ['HE','OMA'];
 const headerEl = document.querySelector('header');
 let nextStreetBtn = document.getElementById('btn-next-street');
 if (!nextStreetBtn) {
@@ -116,8 +114,9 @@ if (!nextStreetBtn) {
   nextStreetBtn.disabled = true;
   nextStreetBtn.title = 'Dealer only';
   nextStreetBtn.textContent = 'Next Street';
-  if (variantSelect && variantSelect.parentNode) {
-    variantSelect.parentNode.insertBefore(nextStreetBtn, variantSelect);
+  const labelEl = variantEl?.parentNode || null;
+  if (labelEl && labelEl.parentNode) {
+    labelEl.parentNode.insertBefore(nextStreetBtn, labelEl);
   } else {
     headerEl?.appendChild(nextStreetBtn);
   }
@@ -240,10 +239,10 @@ function computeDealGate(room, myUid, uiLockActive) {
   const mySeat = room.players?.[myUid]?.seat ?? null;
   const isDealer = mySeat != null && derivedSeat != null && mySeat === derivedSeat;
   const reasons = [];
+  if (!VALID_VARIANTS.includes(variant)) reasons.push('noVariant');
   if (state === 'dealLocked') reasons.push('lockHeld');
   if (state !== 'idle') reasons.push('notIdle');
   if (activeSeated < 2) reasons.push('players<2');
-  if (!(variant === 'HE' || variant === 'OMA')) reasons.push('noVariant');
   if (!isDealer) reasons.push('notDealer');
   if (uiLockActive) reasons.push('uiLock');
   const eligible = reasons.length === 0;
@@ -516,14 +515,10 @@ function renderGatedControls(gate, firstReason) {
     dealBtn.title = title;
   }
 
-  if (variantSelect) {
-    const variantEnabled = isDealer && state === 'idle';
-    variantSelect.disabled = !variantEnabled;
-    let vTitle = '';
-    if (!isDealer) vTitle = 'Dealer only';
-    else if (state === 'dealLocked') vTitle = 'Hand lock in progress';
-    else if (state !== 'idle') vTitle = 'Hand in progress';
-    variantSelect.title = vTitle;
+  if (variantEl) {
+    const variantEnabled = state === 'idle' && isDealer;
+    variantEl.disabled = !variantEnabled;
+    variantEl.title = variantEl.disabled ? (isDealer ? 'Room not idle' : 'Dealer only') : 'Select variant';
   }
 
   if (nextStreetBtn) {
@@ -650,19 +645,20 @@ if (dealBtn) {
   });
 }
 
-if (variantSelect) {
-  variantSelect.addEventListener('change', async (e) => {
-    const value = e.target.value;
+if (variantEl) {
+  variantEl.onchange = async (e) => {
+    const val = e.target.value;
+    const value = VALID_VARIANTS.includes(val) ? val : null;
+    if (currentRoom) currentRoom.variant = value;
+    evaluateAndRenderGate();
     if (!currentRoomRef) return;
     try {
       await updateDoc(currentRoomRef, { variant: value });
       window.DEBUG?.log('variant.select', { value });
     } catch (err) {
-      // ignore
+      window.DEBUG?.log('variant.select.error', { message: String(err) });
     }
-    if (currentRoom) currentRoom.variant = value;
-    evaluateAndRenderGate();
-  });
+  };
 }
 
 if (nextStreetBtn) {
@@ -1449,12 +1445,18 @@ function renderRoom(data) {
   maybeInitTurn(data);
   maybeInitBetting(data);
   maybeAutoReleaseUiDealLock(data);
-  if (variantSelect) {
-    if (data.variant) {
-      variantSelect.value = data.variant;
+  if (variantEl) {
+    if (VALID_VARIANTS.includes(data.variant)) {
+      variantEl.value = data.variant;
+      if (variantChip) {
+        variantChip.textContent = data.variant === 'HE' ? 'Texas' : 'Omaha';
+        variantChip.classList.remove('hidden');
+      }
     } else {
-      variantSelect.value = '';
-      variantSelect.selectedIndex = -1;
+      variantEl.value = '';
+      if (variantChip) {
+        variantChip.classList.add('hidden');
+      }
     }
   }
   evaluateAndRenderGate();

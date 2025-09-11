@@ -18,6 +18,11 @@ header {
   align-items: center;
 }
 
+.variant-label { margin-right: 8px; font-size: 14px; }
+#variant { padding: 4px 6px; }
+.variant-chip { margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: #0b5; color: #fff; font-size: 12px; }
+.variant-chip.hidden { display: none; }
+
 .table-wrap {
   flex: 1;
   display: flex;
