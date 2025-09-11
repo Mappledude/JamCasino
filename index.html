@@ -187,6 +187,7 @@
       setDoc, updateDoc, deleteDoc, query, orderBy, limit, where,
       runTransaction, deleteField
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { fullDeck, shuffle } from "./lib/deck.js";
 
     // --------- Config (use EXACTLY as provided) ----------
     const firebaseConfig = {
@@ -414,8 +415,8 @@ function renderTable(players, meId) {
     }
     const badges = [];
     if (room?.dealerId === p.id) badges.push('D');
-    if (room?.bet?.committed && room.bet.committed[p.id]) {
-      const amt = room.bet.committed[p.id];
+    if (room?.committed && room.committed[p.id]) {
+      const amt = room.committed[p.id];
       if (amt === (room?.blinds?.sbC || 25)) badges.push('SB');
       if (amt === (room?.blinds?.bbC || 50)) badges.push('BB');
     }
@@ -437,10 +438,10 @@ function renderTable(players, meId) {
     layout.push({ name: p.name || 'Player', uid: p.id, seatAngle: angDeg });
   }
 
-  const board = room.board || { flop:[], turn:[], river:[] };
+  const board = room.board || { flop:[], turn:null, river:null };
   const show = room.showBoard || { flop:false, turn:false, river:false };
   const boardHtmlArr = [];
-  const boardCards = [...(board.flop||[]), ...(board.turn||[]), ...(board.river||[])];
+  const boardCards = [...(board.flop||[]), ...(board.turn ? [board.turn] : []), ...(board.river ? [board.river] : [])];
   for (let i=0;i<5;i++) {
     const c = boardCards[i];
     if (!c || room.phase === 'idle' || room.street === 'idle') {
@@ -508,87 +509,97 @@ function setupActionBar(mePlayer, room) {
       });
     }
 
-    // ---------- Deal click (transactional first-hand deal) ----------
-    $deal.onclick = async () => {
-      if (!roomCode) return;
-      log("ui.deal.click", { room: roomCode, uid: me?.uid, name: me?.name });
-      const room = lastRoomState || {};
-      if (room.phase !== "idle" || room.street !== "idle") {
-        log("hand.deal.txn.abort", { reason: "not idle", phase: room.phase, street: room.street });
-        return;
-      }
-      const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
-      const players = [];
-      playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
-      const activePlayers = players.filter(p => !p.leftAt && !p.eliminated);
-      if (activePlayers.length < 2) {
-        log("hand.deal.txn.abort", { reason: "<2 players", active: activePlayers.length });
-        return;
-      }
-      let earliest = null, earliestTs = 1e18;
-      activePlayers.forEach(p => {
-        const ts = p.joinedAt?.seconds ?? p.joinedAt?._seconds ?? null;
-        const millis = ts ? ts * 1000 : null;
-        if (millis !== null && millis < earliestTs) { earliestTs = millis; earliest = p.id; }
-      });
-      if (auth.currentUser.uid !== earliest) {
-        log("hand.deal.txn.abort", { reason: "not-earliest", earliest, me: auth.currentUser.uid });
-        return;
-      }
-      activePlayers.sort((a,b)=>{ const ta=a.joinedAt?.seconds??0, tb=b.joinedAt?.seconds??0; return ta-tb; });
-      const order = activePlayers.map(p=>p.id);
-      const dealerIdx = Math.max(0, order.indexOf(earliest));
-      const orderPF = order.slice(dealerIdx).concat(order.slice(0,dealerIdx));
-      const ranks = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
-      const suits = ['h','d','c','s'];
-      const deck = [];
-      for (const r of ranks) for (const s of suits) deck.push({ rank:r, suit:s });
-      for (let i=deck.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [deck[i],deck[j]]=[deck[j],deck[i]]; }
-      const roomRef = doc(db, "rooms", roomCode);
-      log("hand.deal.txn.start", { room: roomCode });
+    async function startHand(code, dealerUid) {
+      let composed = false;
+      const roomRef = doc(db, "rooms", code);
       try {
         const result = await runTransaction(db, async (tx) => {
           const roomSnap = await tx.get(roomRef);
           const r = roomSnap.data() || {};
-          if (r.phase !== "idle" || r.street !== "idle" || r.dealing) throw new Error("preconditions");
-          tx.update(roomRef, { dealing: true, dealingAt: serverTimestamp() });
+          if (r.phase !== "idle" || r.street !== "idle") throw new Error("not-idle");
+          const lockAt = r.lock?.at?.toMillis ? r.lock.at.toMillis() : 0;
+          if (r.lock?.name === 'deal' && Date.now() - lockAt < 10000) throw new Error('locked');
+          const playersSnap = await tx.get(query(collection(db, 'rooms', code, 'players')));
+          const players = [];
+          playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+          const active = players.filter(p => !p.leftAt && !p.eliminated);
+          if (active.length < 2) throw new Error('<2 players');
+          active.sort((a,b)=>{ const ta=a.joinedAt?.seconds??0, tb=b.joinedAt?.seconds??0; return ta-tb; });
+          const earliest = active[0]?.id;
+          if (dealerUid !== earliest) throw new Error('not-dealer');
+          const seatOrder = active.map(p=>p.id);
+          const n = seatOrder.length;
+          const dealerIdx = seatOrder.indexOf(earliest);
+          let sbIdx, bbIdx;
+          if (n === 2) {
+            sbIdx = dealerIdx; bbIdx = (dealerIdx + 1) % n;
+          } else {
+            sbIdx = (dealerIdx + 1) % n; bbIdx = (sbIdx + 1) % n;
+          }
+          const sbPid = seatOrder[sbIdx];
+          const bbPid = seatOrder[bbIdx];
+          const order = [];
+          if (n === 2) {
+            order.push(sbPid, bbPid);
+          } else {
+            let idx = (bbIdx + 1) % n;
+            while (order.length < n) { order.push(seatOrder[idx]); idx = (idx + 1) % n; }
+          }
+          const deck = shuffle(fullDeck());
           const sbC = r?.blinds?.sbC ?? 25;
           const bbC = r?.blinds?.bbC ?? 50;
           const committed = {};
           let potC = 0;
-          const deductions = [];
-          const sbIndex = (orderPF.length === 2) ? 0 : 1;
-          const bbIndex = (orderPF.length === 2) ? 1 : 2;
-          for (const pid of orderPF) {
-            const pRef = doc(db, "rooms", roomCode, "players", pid);
+          for (const pid of seatOrder) {
+            const pRef = doc(db, 'rooms', code, 'players', pid);
             const pSnap = await tx.get(pRef);
             const pdata = pSnap.data() || {};
-            if (pdata.leftAt || pdata.eliminated) throw new Error("player-left");
-            const cards = [deck.pop(), deck.pop()];
-            let stackBefore = Number(pdata.stack || 0);
-            let stackAfter = stackBefore;
-            let commitC = 0;
-            if (pid === orderPF[sbIndex]) { stackAfter -= sbC/100; commitC = sbC; }
-            if (pid === orderPF[bbIndex]) { stackAfter -= bbC/100; commitC = bbC; }
-            stackAfter = Number(stackAfter.toFixed(2));
-            committed[pid] = commitC;
-            potC += commitC;
-            tx.update(pRef, { hole: cards, stack: stackAfter });
-            deductions.push({ pid, before: stackBefore, after: stackAfter });
+            if (pdata.leftAt || pdata.eliminated) throw new Error('player-left');
+            const card1 = deck.pop();
+            const card2 = deck.pop();
+            let stack = Number(pdata.stack || 0);
+            let commit = 0;
+            if (pid === sbPid) { commit = Math.min(stack, sbC); stack = Math.max(0, stack - sbC); }
+            if (pid === bbPid) { commit = Math.min(stack, bbC); stack = Math.max(0, stack - bbC); }
+            committed[pid] = commit;
+            potC += commit;
+            tx.update(pRef, { hole: [card1, card2], stack });
           }
-          const sbPid = orderPF[sbIndex];
-          const bbPid = orderPF[bbIndex];
-          const turnIdx = orderPF.length === 2 ? 0 : ((bbIndex + 1) % orderPF.length);
-          const bet = { order: orderPF, turnIdx, currentBet: bbC, minBet: bbC, lastRaise: bbC, committed, awaiting: orderPF, lastAggressor: bbPid };
-          tx.update(roomRef, { phase: "betting", street: "preflop", dealerId: earliest, potC, bet, board:{flop:[],turn:[],river:[]}, showBoard:{flop:false,turn:false,river:false}, totalCommittedC:{}, lastResult:null, dealing: deleteField(), dealingAt: deleteField() });
-          return { deductions, summary: { dealer: earliest, sb: sbPid, bb: bbPid, order: orderPF, potC } };
+          const handId = Date.now().toString(36);
+          const lock = { name: 'deal', by: dealerUid, handId, at: serverTimestamp() };
+          tx.update(roomRef, {
+            phase: 'betting',
+            street: 'preflop',
+            handId,
+            dealerId: dealerUid,
+            sbPid,
+            bbPid,
+            order,
+            acting: order[0],
+            lastAggressor: bbPid,
+            potC,
+            committed,
+            board: { flop: [], turn: null, river: null },
+            lock,
+            updatedAt: serverTimestamp(),
+          });
+          if (!composed) {
+            log('hand.deal.compose', { dealerId: dealerUid, sbPid, bbPid, order, potC, committed });
+            composed = true;
+          }
+          return { nPlayers: n };
         });
-        result.deductions.forEach(d => log("hand.deal.deduct", d));
-        log("hand.deal.txn.commit", result.summary);
+        log('hand.deal.success', { code, nPlayers: result.nPlayers });
       } catch (err) {
-        log("hand.deal.txn.abort", { reason: err.message });
-        log("error.firestore", { path: roomRef.path, message: err.message });
+        log('hand.deal.blocked', { reason: err.message });
       }
+    }
+
+    // ---------- Deal click (delegates to startHand) ----------
+    $deal.onclick = async () => {
+      if (!roomCode) return;
+      log('ui.deal.click', { room: roomCode });
+      await startHand(roomCode, auth.currentUser.uid);
     };
   </script>
 </body>
