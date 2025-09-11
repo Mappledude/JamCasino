@@ -266,28 +266,28 @@ function isLockExpired(hand, nowMs) {
   return nowMs - atMs > ttl;
 }
 
-function seedFromStrings(a, b) {
+function xorshift32(seed) {
+  let x = seed >>> 0;
+  return function() {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17; x >>>= 0;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 0x100000000; // [0,1)
+  };
+}
+
+function seedFromString(s) {
   let h = 2166136261 >>> 0;
-  const s = `${a}#${b}`;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+    h = Math.imul(h, 16777619) >>> 0;
   }
   return h >>> 0;
 }
 
-function mulberry32(seed) {
-  return function() {
-    let t = (seed += 0x6D2B79F5) >>> 0;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function shuffledDeck(seed) {
+function shuffledDeck(seedStr) {
+  const rand = xorshift32(seedFromString(seedStr));
   const deck = Array.from({ length: 52 }, (_, i) => i + 1);
-  const rand = mulberry32(seed);
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -305,7 +305,7 @@ function nextOccupiedLeftOf(seat, seats = []) {
 }
 
 function reconstructHoleCards(room, hand) {
-  const deck = shuffledDeck(seedFromStrings(room.code, hand.id));
+  const deck = shuffledDeck(`${room.code}:${hand.id}`);
   const participants = hand.participants || [];
   const seats = room.seats || [];
   const order = [];
@@ -352,8 +352,7 @@ function computeBoardNext(room, hand) {
   const holeCount = hand.holeCount || (hand.variant === 'OMA' ? 4 : 2);
   const consumedHole = N * holeCount;
 
-  const seed = seedFromStrings(room.code, hand.id);
-  const deck = shuffledDeck(seed);
+  const deck = shuffledDeck(`${room.code}:${hand.id}`);
 
   let cp = consumedHole;
 
@@ -1573,6 +1572,7 @@ function renderRoom(data) {
       if (existingHole) existingHole.remove();
     }
   }
+  window.DEBUG?.log('ui.cards.render', { my: myHandCards?.length || 0, others: 'back' });
 
   if (turnStreetMatch) {
     window.DEBUG?.log('turn.render.current', { street: turn.street, currentPid, index: turnIndex, orderLen });
@@ -1781,8 +1781,16 @@ async function runDealFlow(room) {
         }
         const now = serverTimestamp();
         const holeCount = rm.hand?.variant === 'OMA' ? 4 : 2;
-        const seatedPids = (rm.seats || []).filter(Boolean);
-        const participants = seatedPids;
+        const nowMs = Date.now();
+        const participants = [];
+        const seatsArr = rm.seats || [];
+        for (const pid of seatsArr) {
+          if (!pid) continue;
+          const p = rm.players?.[pid];
+          const last = p?.lastSeen?.toMillis?.();
+          const isActive = p?.active === true && typeof last === 'number' && (nowMs - last) <= PRESENCE.STALE_AFTER_MS;
+          if (isActive) participants.push(pid);
+        }
         tx.update(roomRef, {
           'hand.status': 'dealing',
           'hand.holeCount': holeCount,
@@ -1797,9 +1805,9 @@ async function runDealFlow(room) {
     room = snap.data();
     const hand = room.hand;
     const participants = hand.participants || [];
-    window.DEBUG?.log('hand.deal.begin', { handId: hand.id, participants: participants.length });
+    window.DEBUG?.log('hand.deal.begin', { handId: hand.id, participants: participants.length, holeCount: hand.holeCount });
 
-    const deck = shuffledDeck(seedFromStrings(roomCode, hand.id));
+    const deck = shuffledDeck(`${roomCode}:${hand.id}`);
     const order = [];
     const seats = room.seats || [];
     const seen = new Set();
