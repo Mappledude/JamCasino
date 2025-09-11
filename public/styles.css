@@ -9,9 +9,10 @@ header{ display:flex; align-items:center; gap:12px; padding:8px 16px; background
 header .left{ display:flex; align-items:center; gap:8px; }
 .build-tag{ margin-left:8px; color:var(--muted); font-size:12px; }
 .layout{ display:flex; }
-.table-wrap{ flex:1; display:flex; align-items:center; justify-content:center; padding:16px; }
-.poker-table{
-  position:relative; width:1000px; height:640px; background: radial-gradient(ellipse at center, var(--felt) 0%, var(--felt-dark) 80%);
+.table-wrap{ display:flex; align-items:center; justify-content:center; min-height:calc(100vh - 120px); }
+.poker-table{ position:relative; width:1000px; height:640px; }
+.poker-table.blue{
+  background: radial-gradient(ellipse at center, var(--felt) 0%, var(--felt-dark) 80%);
   border-radius:36px; box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 10px #081f44, inset 0 0 0 14px #051433;
 }
 /* Seats */
@@ -69,9 +70,9 @@ header .left{ display:flex; align-items:center; gap:8px; }
 #join-error{ color:var(--danger); min-height:1em; font-size:13px; }
 
 /* Lobby */
-.lobby{ max-width:800px; margin:40px auto; display:flex; flex-direction:column; gap:16px; color:#e9edf3; }
-.lobby-header{ display:flex; justify-content:space-between; align-items:center; padding:16px; background:var(--ink-2); border-bottom:1px solid #2b3040; color:#e9edf3; }
-.wallet-badge{ padding:4px 8px; border-radius:8px; background:var(--ink-2); border:1px solid rgba(255,255,255,.2); }
-.lobby-list{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
-.room-card{ background:var(--ink-2); padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; }
-.room-card button{ padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,.2); background:var(--gold); color:var(--ink); cursor:pointer; }
+.lobby-header{ display:flex; align-items:center; justify-content:space-between; padding:16px; }
+#wallet-badge{ background:#0d1320; padding:6px 10px; border-radius:999px; border:1px solid #ffffff22 }
+.rooms-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap:12px; padding:16px; }
+.room-card{ background:#0f141f; border:1px solid #ffffff1a; border-radius:12px; padding:12px; }
+.room-row{ display:flex; align-items:center; justify-content:space-between; margin:4px 0; }
+.join-btn{ margin-top:8px; width:100%; }

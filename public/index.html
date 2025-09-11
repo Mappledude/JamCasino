@@ -8,12 +8,11 @@
 <body>
   <header class="lobby-header">
     <h1>Lobby</h1>
-    <span id="wallet-badge" class="wallet-badge">$0</span>
+    <div id="wallet-badge">$
+      <span id="wallet-balance">0</span>
+    </div>
   </header>
-  <main class="lobby">
-    <div id="rooms" class="lobby-list"></div>
-    <div id="debug-log"></div>
-  </main>
-  <script type="module" src="./lobby.js"></script>
+  <main id="rooms-grid" class="rooms-grid"></main>
+  <script type="module" src="/lobby.js"></script>
 </body>
 </html>

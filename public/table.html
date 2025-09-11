@@ -2,85 +2,56 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>JamCasino — Poker Table</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <title>JamCasino — Table</title>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-<div id="app">
-  <header>
-    <div class="left">Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span> <span id="build-tag" class="build-tag"></span></div>
-    <label class="variant-label">
-      Next Hand Variant
-      <select id="variant-pref" title="Only the upcoming dealer can change this">
-        <option value="HE">Texas Hold’em</option>
-        <option value="OMA">Omaha</option>
-      </select>
-    </label>
-    <span id="variant-locked-chip" class="variant-chip hidden">—</span>
-    <button id="btn-next-street" disabled title="Dealer only">Reveal Next Street</button>
-    <button id="btn-settle" disabled title="Settle at showdown">Settle Hand</button>
+  <header class="table-head">
+    <button id="btn-leave" title="Leave room">⟵ Lobby</button>
+    <div class="variant">
+      <label>Next Hand Variant
+        <select id="variant-pref">
+          <option value="HE">Texas Hold’em</option>
+          <option value="OMA">Omaha</option>
+        </select>
+      </label>
+      <span id="variant-locked-chip" class="variant-chip hidden">—</span>
+    </div>
+    <div class="dealer-actions">
+      <button id="btn-next-street" disabled>Next Street</button>
+      <button id="btn-settle" disabled>Settle Hand</button>
+    </div>
   </header>
-  <main class="layout">
-    <section class="table-wrap">
-      <div class="poker-table">
-        <div id="pot-pill" class="pot-pill">Pot: 0</div>
-        <div id="result-banner" class="result-banner hidden"></div>
-        <div class="seat seat-0"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 1</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-1"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 2</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-2"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 3</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-3"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 4</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-4"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 5</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-5"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 6</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-6"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 7</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-7"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 8</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div class="seat seat-8"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 9</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
-        <div id="board" class="board">
-          <div class="card-slot empty"></div>
-          <div class="card-slot empty"></div>
-          <div class="card-slot empty"></div>
-          <div class="card-slot empty"></div>
-          <div class="card-slot empty"></div>
-        </div>
-        <div id="my-console" class="my-console">
-          <div id="my-cards" class="cards">
-            <div class="card-slot empty"></div>
-            <div class="card-slot empty"></div>
-            <div class="card-slot empty omh"></div>
-            <div class="card-slot empty omh"></div>
+  <main class="table-wrap">
+    <div class="poker-table blue" id="table">
+      <div id="pot-pill" class="pot-pill">Pot: 0</div>
+      <div id="result-banner" class="result-banner hidden"></div>
+      <div class="seat seat-0"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 1</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-1"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 2</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-2"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 3</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-3"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 4</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-4"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 5</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-5"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 6</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-6"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 7</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-7"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 8</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div class="seat seat-8"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 9</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
+      <div id="board" class="board"></div>
+      <div id="my-console" class="my-console">
+        <div id="my-cards" class="cards"></div>
+        <div class="actions">
+          <button id="btn-fold" disabled title="Fold">Fold</button>
+          <button id="btn-call" disabled title="Check / Call">Check</button>
+          <div class="bet-ctrl">
+            <input id="bet-amount" type="number" min="0" step="1" placeholder="Amount" />
+            <button id="btn-raise" disabled title="Bet / Raise">Bet</button>
           </div>
-          <div class="actions">
-            <button id="btn-fold" disabled title="Fold">Fold</button>
-            <button id="btn-call" disabled title="Check / Call">Check</button>
-            <div class="bet-ctrl">
-              <input id="bet-amount" type="number" min="0" step="1" placeholder="Amount" />
-              <button id="btn-raise" disabled title="Bet / Raise">Bet</button>
-            </div>
-          </div>
-          <div class="turn-hint hidden" id="turn-hint">Your turn</div>
         </div>
+        <div class="turn-hint hidden" id="turn-hint">Your turn</div>
       </div>
-    </section>
-    <aside id="debug-panel">
-      <div class="debug-head">
-        <div>
-          <strong>Debug</strong>
-          <button id="btn-asset-check">Run Asset Check</button>
-        </div>
-        <div id="debug-filter" class="filters">
-          <label><input type="checkbox" data-group="ui" checked> ui</label>
-          <label><input type="checkbox" data-group="hand" checked> hand</label>
-          <label><input type="checkbox" data-group="street" checked> street</label>
-          <label><input type="checkbox" data-group="betting" checked> betting</label>
-          <label><input type="checkbox" data-group="presence" checked> presence</label>
-          <label><input type="checkbox" data-group="settle" checked> settle</label>
-          <label><input type="checkbox" data-group="wallet" checked> wallet</label>
-          <button id="btn-gate-inspector">Gating Inspector</button>
-        </div>
-      </div>
-      <div id="gating-inspector" class="hidden"></div>
-      <div id="debug-log"></div>
-    </aside>
+    </div>
   </main>
-<script type="module" src="./app.js"></script>
+  <aside id="debug-panel"><div id="debug-log"></div></aside>
+  <script src="/poker-eval.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

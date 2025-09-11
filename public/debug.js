@@ -87,4 +87,8 @@ export class Debug {
     this.gateInspectorEl.appendChild(table);
     this.log('gate.inspect', info);
   }
+
+  nav(event, payload = {}) {
+    this.log(`nav.${event}`, payload);
+  }
 }
