@@ -155,7 +155,7 @@
               await updateDoc(doc(db, "rooms", id), {
                 phase: "idle", street: "idle", dealerId: null, potC: 0,
                 totalCommittedC: {}, bet: null,
-                board: { flop: [], turn: [], river: [] },
+                board: { flop: [], turn: null, river: null },
                 showBoard: { flop: false, turn: false, river: false },
                 lastResult: null
               });
@@ -185,7 +185,7 @@
         potC: 0,
         totalCommittedC: {},
         bet: null,
-        board: { flop: [], turn: [], river: [] },
+        board: { flop: [], turn: null, river: null },
         showBoard: { flop: false, turn: false, river: false },
         announcements: [],
         lastResult: null
