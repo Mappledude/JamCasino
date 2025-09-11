@@ -1,4 +1,4 @@
-import { verifyCardAssets, resolveCardSrc, resolveCardSrcByIndex, CARD_BACK_SRC } from './cards.js';
+import { verifyCardAssets } from './cards.js';
 import { Debug } from './debug.js';
 import { evalTexas7, evalOmaha, compareHands } from './poker-eval.js';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
@@ -31,6 +31,12 @@ const DEAL_LOCK = {
 
 const DEFAULT_CONFIG = { sb: 25, bb: 50, startingStack: 10000 };
 
+const params = new URLSearchParams(location.search);
+const initialRoom = params.get('room');
+if (!initialRoom) {
+  location.replace('/index.html');
+}
+
 let roomCode = null;
 let heartbeatTimer = null;
 let sweeperTimer = null;
@@ -46,6 +52,28 @@ let myHandUnsub = null;
 let myHandId = null;
 let myHandCards = null;
 let upcomingDealerPid = null;
+
+const rankOffset = {2:0,3:1,4:2,5:3,6:4,7:5,8:6,9:7,10:8,J:9,Q:10,K:11,A:12};
+const baseBySuit = { D:1, C:14, H:27, S:40 };
+function resolveCardSrc(rank, suit){
+  const index = baseBySuit[suit] + rankOffset[rank];
+  return `/Images/Card_Deck-${String(index).padStart(2,'0')}.png`;
+}
+const CARD_BACK = '/Images/Card_Deck-Back.png';
+function indexToRankSuit(i){
+  if (i<14) return {s:'D', r:[2,3,4,5,6,7,8,9,10,'J','Q','K','A'][i-1]};
+  if (i<27) return {s:'C', r:[2,3,4,5,6,7,8,9,10,'J','Q','K','A'][i-14]};
+  if (i<40) return {s:'H', r:[2,3,4,5,6,7,8,9,10,'J','Q','K','A'][i-27]};
+  return {s:'S', r:[2,3,4,5,6,7,8,9,10,'J','Q','K','A'][i-40]};
+}
+function cardImgByIndex(i){
+  const {s,r} = indexToRankSuit(i);
+  const src = resolveCardSrc(r,s);
+  const img = new Image();
+  img.src = src;
+  img.alt = `${r}${s}`;
+  return img;
+}
 
 
 const debug = new Debug({
@@ -99,10 +127,8 @@ onAuthStateChanged(auth, async (user) => {
   if (playerSpan) playerSpan.textContent = user.uid;
 
   await ensureWallet(user.uid);
-  const params = new URLSearchParams(location.search);
-  const codeParam = params.get('room');
-  if (codeParam) {
-    await joinRoomByCode(codeParam.toUpperCase());
+  if (initialRoom) {
+    await joinRoomByCode(initialRoom.toUpperCase());
   }
   window.DEBUG?.log('firebase.init.ok', { appName: app.name });
   window.DEBUG?.log('auth.anon.signIn.success', { uid: user.uid, persistence: 'session' });
@@ -113,6 +139,17 @@ onAuthStateChanged(auth, async (user) => {
   if (assetBtn) assetBtn.addEventListener('click', () => {
     verifyCardAssets();
   });
+
+  const leaveBtn = document.getElementById('btn-leave');
+  if (leaveBtn) {
+    leaveBtn.onclick = async () => {
+      try {
+        await safeUnseatAndCreditIfIdle();
+      } catch(_) {}
+      debug.log('nav.table.leave', { roomCode });
+      location.href = '/index.html';
+    };
+  }
 
 // --- Gated controls ---
 const prefEl = document.getElementById('variant-pref');
@@ -882,14 +919,12 @@ function nextActiveIndex(order, startIdx, bet) {
   return startIdx;
 }
 
-function everyoneMatchedOrAllIn(bet) {
+function isRoundClosed(bet) {
   const currentBet = bet.currentBet || 0;
-  for (const pid in bet.in) {
-    if (!bet.in[pid]) continue;
-    if (bet.allIn[pid]) continue;
-    if ((bet.committed?.[pid] || 0) !== currentBet) return false;
-  }
-  return true;
+  const participants = Object.keys(bet.in || {});
+  const active = participants.filter(pid => bet.in[pid] && !bet.allIn?.[pid]);
+  if (active.length <= 1) return true;
+  return participants.every(pid => !bet.in[pid] || bet.allIn?.[pid] || ((bet.committed?.[pid] || 0) === currentBet));
 }
 
 if (foldBtn) {
@@ -959,7 +994,7 @@ if (foldBtn) {
           window.DEBUG?.log('action.call.success', { pid: uid, amount: pay, pot: bet.pot });
           const nextIdx = nextActiveIndex(order, turn.index, bet);
           turn.index = nextIdx;
-          if (order[nextIdx] === hand.turn.untilPid && everyoneMatchedOrAllIn(bet)) {
+          if (order[nextIdx] === hand.turn.untilPid && isRoundClosed(bet)) {
             hand.turn.roundComplete = true;
             bet.roundClosed = true;
             window.DEBUG?.log('betting.round.closed', { street: bet.street });
@@ -969,7 +1004,7 @@ if (foldBtn) {
         } else {
           const nextIdx = nextActiveIndex(order, turn.index, bet);
           turn.index = nextIdx;
-          if (order[nextIdx] === hand.turn.untilPid && everyoneMatchedOrAllIn(bet)) {
+          if (order[nextIdx] === hand.turn.untilPid && isRoundClosed(bet)) {
             hand.turn.roundComplete = true;
             bet.roundClosed = true;
             window.DEBUG?.log('betting.round.closed', { street: bet.street });
@@ -1268,6 +1303,7 @@ async function joinRoomByCode(code){
   roomCode = code;
   window.APP = window.APP || {};
   window.APP.roomCode = code;
+  debug.log('nav.table.enter', { roomCode: code });
   document.getElementById('room-code').textContent = code;
   currentRoomRef = doc(db,'rooms',code);
   await updateDoc(currentRoomRef, {
@@ -1655,34 +1691,15 @@ function renderRoom(data) {
       if (bbEl) bbEl.remove();
     }
 
-    const existingHole = seatEl.querySelector('.hole-cards');
-    if (data.state === 'hand' && data.hand?.status === 'preflop' && pid && (data.hand.participants || []).includes(pid)) {
-      let holeEl = existingHole;
-      if (!holeEl) {
-        holeEl = document.createElement('div');
-        holeEl.className = 'hole-cards';
-        holeEl.style.display = 'flex';
-        holeEl.style.gap = '4px';
-        seatEl.appendChild(holeEl);
-      }
-      const holeCount = data.hand.holeCount || 2;
-      for (let i = 0; i < holeCount; i++) {
-        let slot = holeEl.children[i];
-        if (!slot) {
-          slot = document.createElement('div');
-          slot.className = 'card-slot';
-          holeEl.appendChild(slot);
-        }
-        const cardIndex = (pid === uid && myHandCards && myHandCards[i]) ? myHandCards[i] : null;
-        const src = cardIndex ? resolveCardSrcByIndex(cardIndex) : CARD_BACK_SRC;
-        slot.style.backgroundImage = `url(${src})`;
-        slot.classList.remove('empty');
-      }
-      while (holeEl.children.length > holeCount) holeEl.removeChild(holeEl.lastChild);
-    } else {
-      if (existingHole) existingHole.remove();
+    const existingHole = seatEl.querySelector('.cards');
+    const holeCount = data.hand?.holeCount || 0;
+    if (pid && pid !== uid && data.state === 'hand' && (data.hand.participants || []).includes(pid) && data.hand.status === 'preflop') {
+      renderOpponentHoles(holeCount, seatEl);
+    } else if (existingHole) {
+      existingHole.remove();
     }
   }
+  renderMyCards(myHandCards, data.hand?.holeCount || 0);
   window.DEBUG?.log('ui.cards.render', { my: myHandCards?.length || 0, others: 'back' });
 
   if (turnStreetMatch) {
@@ -1690,22 +1707,8 @@ function renderRoom(data) {
   }
 
   const board = data.hand?.board || [];
-  const boardEl = document.getElementById('board');
-  if (boardEl) {
-    for (let i = 0; i < 5; i++) {
-      const slot = boardEl.children[i];
-      if (!slot) continue;
-      const cardIndex = board[i];
-      if (cardIndex) {
-        slot.style.backgroundImage = `url(${resolveCardSrcByIndex(cardIndex)})`;
-        slot.classList.remove('empty');
-      } else {
-        slot.style.backgroundImage = '';
-        slot.classList.add('empty');
-      }
-    }
-    window.DEBUG?.log('ui.board.render', { count: board.length, status: data.hand?.status || null });
-  }
+  renderBoard(board);
+  window.DEBUG?.log('ui.board.render', { count: board.length, status: data.hand?.status || null });
 
   let banner = document.getElementById('result-banner');
   if (data.state === 'idle' && data.lastResult?.id) {
@@ -1748,27 +1751,36 @@ function renderRoom(data) {
   maybeRunDeal(data);
 }
 
-function renderMyHoleCards(cards = [], holeCount = 0) {
-  const container = document.querySelector('#my-console .cards');
-  if (!container) return;
-  for (let i = 0; i < 4; i++) {
-    let slot = container.children[i];
-    if (!slot) {
-      slot = document.createElement('div');
-      slot.className = 'card-slot';
-      container.appendChild(slot);
-    }
-    if (cards[i]) {
-      slot.style.backgroundImage = `url(${resolveCardSrcByIndex(cards[i])})`;
-      slot.classList.remove('empty');
-    } else if (i < holeCount) {
-      slot.style.backgroundImage = `url(${CARD_BACK_SRC})`;
-      slot.classList.remove('empty');
-    } else {
-      slot.style.backgroundImage = '';
-      slot.classList.add('empty');
-    }
+function renderMyCards(indices = [], holeCount = 0) {
+  const wrap = document.getElementById('my-cards');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  (indices || []).slice(0, holeCount).forEach(i => wrap.appendChild(cardImgByIndex(i)));
+}
+
+function renderOpponentHoles(holeCount, seatEl) {
+  const wrap = seatEl.querySelector('.cards') || (() => {
+    const w = document.createElement('div');
+    w.className = 'cards';
+    w.style.display = 'flex';
+    w.style.gap = '4px';
+    seatEl.appendChild(w);
+    return w;
+  })();
+  wrap.innerHTML = '';
+  for (let k = 0; k < holeCount; k++) {
+    const img = new Image();
+    img.src = CARD_BACK;
+    img.alt = 'back';
+    wrap.appendChild(img);
   }
+}
+
+function renderBoard(boardIndices = []) {
+  const board = document.getElementById('board');
+  if (!board) return;
+  board.innerHTML = '';
+  (boardIndices || []).forEach(i => board.appendChild(cardImgByIndex(i)));
 }
 
 function ensureMyHandListener(room) {
@@ -1779,7 +1791,7 @@ function ensureMyHandListener(room) {
     myHandUnsub = null;
     myHandId = null;
     myHandCards = null;
-    renderMyHoleCards([]);
+    renderMyCards([], 0);
     return;
   }
   if (myHandId === handId) return;
@@ -1790,7 +1802,7 @@ function ensureMyHandListener(room) {
     if (snap.exists()) {
       const data = snap.data();
       myHandCards = data.cards || [];
-      renderMyHoleCards(myHandCards, room.hand?.holeCount || 0);
+      renderMyCards(myHandCards, room.hand?.holeCount || 0);
       window.DEBUG?.log('hand.private.listen.ready', { handId });
       window.DEBUG?.log('ui.hole.render.mine', { cards: myHandCards });
       renderRoom(currentRoom);
@@ -1809,6 +1821,31 @@ async function ensureRoomConfig(room) {
     // ignore
   }
   room.config = { ...DEFAULT_CONFIG };
+}
+
+async function safeUnseatAndCreditIfIdle(){
+  const uid = auth.currentUser?.uid;
+  if(!uid || !currentRoomRef) return;
+  await runTransaction(db, async tx => {
+    const snap = await tx.get(currentRoomRef);
+    if(!snap.exists()) return;
+    const room = snap.data();
+    if(room.state !== 'idle') return;
+    const seat = room.players?.[uid]?.seat;
+    if(seat == null) return;
+    const seats = room.seats || [];
+    const stackMap = room.stacks || {};
+    const players = room.players || {};
+    const stack = stackMap[uid] || 0;
+    const wRef = doc(db,'wallets',uid);
+    const wSnap = await tx.get(wRef);
+    const bal = wSnap.data()?.balance || 0;
+    seats[seat] = null;
+    players[uid].seat = null;
+    delete stackMap[uid];
+    tx.update(wRef,{ balance: bal + stack });
+    tx.update(currentRoomRef,{ seats, players, stacks: stackMap });
+  });
 }
 
 async function maybeLockNextVariant(room, gate) {

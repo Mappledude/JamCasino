@@ -91,6 +91,11 @@
       log('admin.room.create.success', { code, config:{min,max,sb,bb} });
       const msg = document.createElement('div');
       msg.textContent = `Created table ${code}`;
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open Table';
+      openBtn.onclick = () => location.href = `/table.html?room=${encodeURIComponent(code)}`;
+      msg.appendChild(document.createElement('br'));
+      msg.appendChild(openBtn);
       logEl.appendChild(msg);
     };
   </script>

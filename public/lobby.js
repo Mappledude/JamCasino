@@ -1,12 +1,18 @@
 import { Debug } from './debug.js';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-import { getAuth, setPersistence, browserSessionPersistence, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
-import { getFirestore, collection, query, orderBy, onSnapshot, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+import { getFirestore, collection, query, orderBy, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
 const debug = new Debug({});
 window.DEBUG = debug;
 
-debug.log('lobby.init', { ua: navigator.userAgent });
+debug.log('nav.lobby.loaded', { url: location.href });
+
+// redirect if ?room=CODE accidentally hits index
+const rc = new URLSearchParams(location.search).get('room');
+if (rc) {
+  location.replace(`/table.html?room=${encodeURIComponent(rc)}`);
+}
 
 const firebaseConfig = {
   apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
@@ -20,59 +26,58 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-await setPersistence(auth, browserSessionPersistence);
+
 await signInAnonymously(auth);
 
-let walletBalance = 0;
-
-async function ensureWallet(uid){
-  const wRef = doc(db,'wallets',uid);
-  const snap = await getDoc(wRef);
-  if(!snap.exists()){
-    await setDoc(wRef,{ balance:100, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
-    walletBalance = 100;
-  }else{
-    walletBalance = snap.data().balance || 0;
-  }
-  debug.log('wallet.init',{ balance:walletBalance });
-  const balEl = document.getElementById('wallet-badge');
-  if(balEl) balEl.textContent = `$${walletBalance}`;
-}
-
-onAuthStateChanged(auth, async user => {
-  if(!user) return;
+onAuthStateChanged(auth, async (user) => {
+  if (!user) return;
   await ensureWallet(user.uid);
-  loadRooms();
+  subscribeRooms();
 });
 
-function loadRooms(){
-  const q = query(collection(db,'rooms'), orderBy('createdAt','desc'));
-  onSnapshot(q, snap => {
-    const list = document.getElementById('rooms');
-    list.innerHTML='';
-    snap.forEach(docSnap => {
-      const room = docSnap.data();
+async function ensureWallet(uid) {
+  const wRef = doc(db, 'wallets', uid);
+  const snap = await getDoc(wRef);
+  let bal = 0;
+  if (!snap.exists()) {
+    await setDoc(wRef, { balance: 100 });
+    bal = 100;
+  } else {
+    bal = snap.data().balance || 0;
+  }
+  const badge = document.getElementById('wallet-balance');
+  if (badge) badge.textContent = bal;
+}
+
+function subscribeRooms() {
+  const q = query(collection(db, 'rooms'), orderBy('createdAt', 'desc'));
+  onSnapshot(q, (snap) => {
+    const grid = document.getElementById('rooms-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    snap.forEach((docSnap) => {
+      const r = docSnap.data();
+      const seatsUsed = (r.seats || []).filter(Boolean).length;
+      const min = r?.config?.minBuyIn ?? 10;
+      const max = r?.config?.maxBuyIn ?? 20;
+      const sb = r?.config?.sb ?? 0.25;
+      const bb = r?.config?.bb ?? 0.50;
       const card = document.createElement('div');
       card.className = 'room-card';
-      const info = document.createElement('div');
-      const seats = (room.seats || []).filter(Boolean).length;
-      const cfg = room.config || {};
-      info.textContent = `${room.code} — ${seats}/9 seats — $${cfg.minBuyIn||10}-$${cfg.maxBuyIn||20} — ${cfg.sb||0.25}/${cfg.bb||0.50} — ${room.state}`;
-      const btn = document.createElement('button');
-      btn.textContent = 'Join';
-      const min = cfg.minBuyIn || 10;
-      if(walletBalance < min){
-        btn.disabled = true;
-        btn.title = 'Insufficient balance';
-      }else{
-        btn.onclick = () => {
-          location.href = `/table.html?room=${encodeURIComponent(room.code)}`;
-        };
-      }
-      card.appendChild(info);
-      card.appendChild(btn);
-      list.appendChild(card);
+      card.innerHTML = `
+        <div class="room-row"><strong>${r.code}</strong><span>${seatsUsed}/9</span></div>
+        <div class="room-row">$${min}–$${max} • SB $${sb} / BB $${bb}</div>
+        <div class="room-row">Status: ${r.state || 'idle'}</div>
+        <button class="join-btn" data-code="${r.code}">Join</button>
+      `;
+      grid.appendChild(card);
     });
-    debug.log('lobby.rooms.render',{ count:snap.size });
+    document.querySelectorAll('.join-btn').forEach((b) => {
+      b.onclick = () => {
+        const code = b.dataset.code;
+        location.href = `/table.html?room=${encodeURIComponent(code)}`;
+      };
+    });
+    debug.log('lobby.rooms.render', { count: snap.size });
   });
 }
