@@ -1,5 +1,6 @@
 import { verifyCardAssets, resolveCardSrc, resolveCardSrcByIndex, CARD_BACK_SRC } from './cards.js';
 import { Debug } from './debug.js';
+import { evalTexas7 } from './poker-eval.js';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import {
   getAuth,
@@ -120,6 +121,15 @@ if (!nextStreetBtn) {
     headerEl?.appendChild(nextStreetBtn);
   }
 }
+let settleBtn = document.getElementById('btn-settle');
+if (!settleBtn) {
+  settleBtn = document.createElement('button');
+  settleBtn.id = 'btn-settle';
+  settleBtn.disabled = true;
+  settleBtn.title = 'Settle at showdown';
+  settleBtn.textContent = 'Settle Hand';
+  headerEl?.appendChild(settleBtn);
+}
 const lockInfoEl = document.createElement('span');
 lockInfoEl.id = 'lock-info';
 lockInfoEl.className = 'lock-info';
@@ -212,6 +222,68 @@ function shuffledDeck(seed) {
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
   return deck;
+}
+
+function nextOccupiedLeftOf(seat, seats = []) {
+  const N = seats.length;
+  for (let k = 1; k <= N; k++) {
+    const idx = (seat + k) % N;
+    if (seats[idx]) return idx;
+  }
+  return seat;
+}
+
+function reconstructHoleCards(room, hand) {
+  const deck = shuffledDeck(seedFromStrings(room.code, hand.id));
+  const participants = hand.participants || [];
+  const seats = room.seats || [];
+  const order = [];
+  const seen = new Set();
+  for (let i = 1; i <= 9; i++) {
+    const idx = (hand.dealerSeat + i) % 9;
+    const pid = seats[idx];
+    if (pid && participants.includes(pid) && !seen.has(pid)) {
+      order.push(pid);
+      seen.add(pid);
+    }
+  }
+  const dealt = {};
+  let ptr = 0;
+  for (let r = 0; r < hand.holeCount; r++) {
+    for (const pid of order) {
+      if (!dealt[pid]) dealt[pid] = [];
+      dealt[pid].push(deck[ptr++]);
+    }
+  }
+  return dealt;
+}
+
+function buildSidePots(contribMap = {}, inMap = {}) {
+  const entries = Object.entries(contribMap).filter(([, v]) => v > 0);
+  if (!entries.length) return [];
+  const remain = Object.fromEntries(entries);
+  const pots = [];
+  while (true) {
+    const activePids = Object.keys(remain).filter(pid => remain[pid] > 0);
+    if (!activePids.length) break;
+    const floor = Math.min(...activePids.map(pid => remain[pid]));
+    const layerPids = activePids;
+    const layerAmt = floor * layerPids.length;
+    const eligibles = layerPids.filter(pid => inMap[pid] === true);
+    pots.push({ amount: layerAmt, eligibles });
+    layerPids.forEach(pid => { remain[pid] -= floor; });
+  }
+  return pots;
+}
+
+function compareHandRanks(a, b) {
+  if (a.cat !== b.cat) return a.cat - b.cat;
+  const len = Math.max(a.key.length, b.key.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (a.key[i] || 0) - (b.key[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function computeBoardNext(room, hand) {
@@ -454,6 +526,30 @@ function renderGatedControls() {
     nextStreetBtn.textContent = label;
   }
 
+  if (settleBtn) {
+    let stReason = null;
+    const hand = currentRoom?.hand;
+    const bet = hand?.betting;
+    const pending = hand?.result?.pending === true;
+    if (uiDealLock.active) stReason = 'uiLock';
+    else if (state !== 'hand') stReason = 'noHand';
+    else if (!isDealer) stReason = 'notDealer';
+    else if (!pending) {
+      const allInClosed = bet ? Object.entries(bet.in || {}).filter(([p, v]) => v).every(([pid]) => bet.allIn?.[pid]) : false;
+      if (hand?.status !== 'river') stReason = 'runStreets';
+      else if (!(bet?.roundClosed || allInClosed)) stReason = 'roundOpen';
+    }
+    settleBtn.disabled = stReason !== null;
+    let stTitle = '';
+    if (stReason === 'notDealer') stTitle = 'Dealer only';
+    else if (stReason === 'noHand') stTitle = 'No hand in progress';
+    else if (stReason === 'runStreets') stTitle = 'Run streets first';
+    else if (stReason === 'roundOpen') stTitle = 'Betting not closed';
+    else if (stReason === 'uiLock') stTitle = 'Please wait…';
+    settleBtn.title = stTitle || 'Settle at showdown';
+    settleBtn.textContent = pending ? 'Award Pot' : 'Settle Hand';
+  }
+
   window.DEBUG?.log('ui.gate.evaluate', {
     isDealer,
     state,
@@ -613,6 +709,136 @@ if (nextStreetBtn) {
   });
 }
 
+if (settleBtn) {
+  settleBtn.addEventListener('click', async () => {
+    const hand = currentRoom?.hand || {};
+    const bet = hand.betting || {};
+    const path = hand.result?.pending === true ? 'foldAward' : 'showdown';
+    window.DEBUG?.log('settle.click', { path });
+    if (!currentRoomRef) return;
+
+    const room = currentRoom;
+    const payoutMap = {};
+    const rankLabels = {};
+    let potsResolved = [];
+
+    if (path === 'showdown') {
+      const dealt = reconstructHoleCards(room, hand);
+      const board = hand.board || [];
+      const handRanks = {};
+      for (const pid of Object.keys(dealt)) {
+        const r = evalTexas7(dealt[pid], board);
+        handRanks[pid] = r;
+        rankLabels[pid] = r.label;
+      }
+      const pots = buildSidePots(bet.contrib || {}, bet.in || {});
+      window.DEBUG?.log('settle.pots.built', { count: pots.length });
+      const seatsArr = room.seats || [];
+      pots.forEach((p, idx) => {
+        let best = null; let winners = [];
+        for (const pid of p.eligibles) {
+          const hr = handRanks[pid];
+          if (!best || compareHandRanks(hr, best) > 0) {
+            best = hr; winners = [pid];
+          } else if (compareHandRanks(hr, best) === 0) {
+            winners.push(pid);
+          }
+        }
+        let shareBase = winners.length ? Math.floor(p.amount / winners.length) : 0;
+        let remainder = winners.length ? p.amount % winners.length : p.amount;
+        const shares = winners.map(() => shareBase);
+        if (remainder > 0 && winners.length > 0) {
+          const order = [];
+          for (let i = 1; i <= seatsArr.length; i++) {
+            const s = (hand.dealerSeat + i) % seatsArr.length;
+            const pid = seatsArr[s];
+            if (winners.includes(pid)) order.push(pid);
+          }
+          const firstRemainderPid = order[0] || null;
+          for (let i = 0; i < remainder; i++) {
+            const pid = order[i % order.length];
+            shares[winners.indexOf(pid)]++;
+          }
+          window.DEBUG?.log('settle.pot.resolve.remainder', { potIndex: idx, amount: p.amount, winners, base: shareBase, remainder, firstRemainderPid });
+        }
+        const remainderAfter = p.amount - shares.reduce((a, b) => a + b, 0);
+        window.DEBUG?.log('settle.pot.resolve', { potIndex: idx, amount: p.amount, winners, shares, remainder: remainderAfter });
+        winners.forEach((pid, i) => { payoutMap[pid] = (payoutMap[pid] || 0) + shares[i]; });
+        potsResolved.push({ amount: p.amount, winners: winners.map((pid,i)=>({ pid, share: shares[i] })), eligibles: p.eligibles.length, tie: winners.length > 1 });
+      });
+    } else {
+      const winnerPid = Object.entries(bet.in || {}).find(([pid, v]) => v)?.[0] || null;
+      const amount = bet.pot || 0;
+      if (winnerPid) {
+        payoutMap[winnerPid] = amount;
+        potsResolved = [{ amount, winners: [{ pid: winnerPid, share: amount }], eligibles: 1, tie: false }];
+      }
+    }
+
+    try {
+      const res = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(currentRoomRef);
+        if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+        const roomTx = snap.data();
+        const h = roomTx.hand || {};
+        if (roomTx.state !== 'hand' || !h.id || h.id !== hand.id || h.status === 'paid') {
+          return { type: 'IDEMPOTENT', handId: hand.id };
+        }
+        if (path === 'showdown') {
+          const b = h.betting || {};
+          const allInClosed = Object.entries(b.in || {}).filter(([p, v]) => v).every(([pid]) => b.allIn?.[pid]);
+          if (h.status !== 'river' || (!(b.roundClosed || allInClosed)) || h.variant !== 'HE') {
+            throw { code: 'PRECONDITION_FAILED' };
+          }
+        }
+
+        const playerUpdates = {};
+        for (const pid in bet.stacks) {
+          const finalStack = (bet.stacks[pid] || 0) + (payoutMap[pid] || 0);
+          playerUpdates[`players.${pid}.stack`] = finalStack;
+        }
+
+        const result = {
+          handId: h.id,
+          pots: potsResolved,
+          payout: payoutMap,
+          rankLabels,
+          reason: path === 'showdown' ? 'showdown' : (h.result?.reason || 'showdown'),
+          paidAt: serverTimestamp()
+        };
+
+        tx.update(currentRoomRef, {
+          state: 'idle',
+          lastResult: {
+            id: h.id,
+            board: h.board || [],
+            variant: h.variant,
+            dealerSeat: h.dealerSeat,
+            result
+          },
+          dealerSeat: nextOccupiedLeftOf(h.dealerSeat, roomTx.seats || []),
+          hand: null,
+          ...playerUpdates
+        });
+
+        return { type: 'SETTLED', handId: h.id, pots: potsResolved.length, winners: Object.keys(payoutMap).length, path };
+      });
+      if (res?.type === 'SETTLED') {
+        window.DEBUG?.log('settle.tx.success', { handId: res.handId, pots: res.pots, winners: res.winners });
+        if (path === 'foldAward') {
+          const pid = Object.keys(payoutMap)[0];
+          const amount = payoutMap[pid];
+          window.DEBUG?.log('settle.fold.award', { pid, amount });
+        }
+      } else {
+        window.DEBUG?.log('settle.tx.idempotent', { handId: hand.id });
+      }
+    } catch (e) {
+      window.DEBUG?.log('settle.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+    }
+  });
+}
+
 function nextActiveIndex(order, startIdx, bet) {
   const len = order.length;
   for (let i = 1; i <= len; i++) {
@@ -693,7 +919,10 @@ if (checkBtn) {
           bet.committed[uid] = committed + pay;
           bet.stacks[uid] = stack - pay;
           bet.pot += pay;
+          bet.contrib = bet.contrib || {};
+          bet.contrib[uid] = (bet.contrib[uid] || 0) + pay;
           if (bet.stacks[uid] === 0) bet.allIn[uid] = true;
+          window.DEBUG?.log('betting.contrib.update', { pid: uid, add: pay, total: bet.contrib[uid] });
           window.DEBUG?.log('action.call.success', { pid: uid, amount: pay, pot: bet.pot });
           const nextIdx = nextActiveIndex(order, turn.index, bet);
           turn.index = nextIdx;
@@ -753,6 +982,9 @@ if (betBtn) {
         bet.committed[uid] = desiredTo;
         bet.stacks[uid] = stack - delta;
         bet.pot += delta;
+        bet.contrib = bet.contrib || {};
+        bet.contrib[uid] = (bet.contrib[uid] || 0) + delta;
+        window.DEBUG?.log('betting.contrib.update', { pid: uid, add: delta, total: bet.contrib[uid] });
         if (bet.stacks[uid] === 0) bet.allIn[uid] = true;
         const prevBet = bet.currentBet || 0;
         bet.currentBet = Math.max(prevBet, desiredTo);
@@ -1102,17 +1334,20 @@ async function maybeInitBetting(room) {
       const bbSeat = nextOccupied(sbSeat ?? dealerSeat);
       const sbPid = seats[sbSeat];
       const bbPid = seats[bbSeat];
-      const stacks = {}; const committed = {}; const inMap = {}; const allIn = {};
+      const stacks = {}; const committed = {}; const inMap = {}; const allIn = {}; const contrib = {};
       for (const pid of participants) {
         stacks[pid] = rm.players?.[pid]?.stack ?? rm.config?.startingStack ?? DEFAULT_CONFIG.startingStack;
         committed[pid] = 0;
         inMap[pid] = true;
         allIn[pid] = false;
+        contrib[pid] = 0;
       }
       const sb = rm.config?.sb ?? DEFAULT_CONFIG.sb;
       const bb = rm.config?.bb ?? DEFAULT_CONFIG.bb;
-      committed[sbPid] += sb; stacks[sbPid] -= sb;
-      committed[bbPid] += bb; stacks[bbPid] -= bb;
+      committed[sbPid] += sb; stacks[sbPid] -= sb; contrib[sbPid] += sb;
+      committed[bbPid] += bb; stacks[bbPid] -= bb; contrib[bbPid] += bb;
+      window.DEBUG?.log('betting.contrib.update', { pid: sbPid, add: sb, total: contrib[sbPid] });
+      window.DEBUG?.log('betting.contrib.update', { pid: bbPid, add: bb, total: contrib[bbPid] });
       if (stacks[sbPid] < 0) { committed[sbPid] += stacks[sbPid]; stacks[sbPid] = 0; allIn[sbPid] = true; }
       if (stacks[bbPid] < 0) { committed[bbPid] += stacks[bbPid]; stacks[bbPid] = 0; allIn[bbPid] = true; }
       const pot = committed[sbPid] + committed[bbPid];
@@ -1127,6 +1362,7 @@ async function maybeInitBetting(room) {
         stacks,
         in: inMap,
         allIn,
+        contrib,
         sb, bb,
         sbPid, bbPid,
         lastAggressorPid: bbPid,
@@ -1241,6 +1477,22 @@ function renderRoom(data) {
       } else if (allInEl) {
         allInEl.remove();
       }
+      let rankEl = seatEl.querySelector('.rank-label');
+      if (data.state === 'idle' && data.lastResult?.id) {
+        const label = data.lastResult?.result?.rankLabels?.[pid] || '';
+        if (label) {
+          if (!rankEl) {
+            rankEl = document.createElement('div');
+            rankEl.className = 'rank-label';
+            seatEl.appendChild(rankEl);
+          }
+          rankEl.textContent = label;
+        } else if (rankEl) {
+          rankEl.remove();
+        }
+      } else if (rankEl) {
+        rankEl.remove();
+      }
     } else {
       nameEl.textContent = `Seat ${sIdx + 1} (empty)`;
       const dotEl = seatEl.querySelector('.status-dot');
@@ -1249,6 +1501,8 @@ function renderRoom(data) {
       if (committedEl) committedEl.textContent = 'in pot: $0';
       seatEl.classList.remove('me');
       seatEl.classList.remove('folded');
+      const rankEl = seatEl.querySelector('.rank-label');
+      if (rankEl) rankEl.remove();
     }
     seatEl.classList.toggle('turn', pid && pid === currentPid);
 
@@ -1314,6 +1568,38 @@ function renderRoom(data) {
       }
     }
     window.DEBUG?.log('ui.board.render', { count: board.length, status: data.hand?.status || null });
+  }
+
+  let banner = document.getElementById('result-banner');
+  if (data.state === 'idle' && data.lastResult?.id) {
+    const res = data.lastResult.result || {};
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'result-banner';
+      banner.className = 'result-banner';
+      boardEl?.parentElement?.appendChild(banner);
+    }
+    const payout = res.payout || {};
+    const winnersText = Object.entries(payout).filter(([pid, amt]) => amt > 0).map(([pid, amt]) => {
+      const name = data.players?.[pid]?.displayName || 'Player';
+      return `${name} (+$${amt})`;
+    }).join(', ');
+    let html = `Winners: ${winnersText}`;
+    const pots = res.pots || [];
+    if (pots.length > 1) {
+      pots.forEach((p, idx) => {
+        if (idx === 0) return;
+        const line = p.winners.map(w => {
+          const name = data.players?.[w.pid]?.displayName || 'Player';
+          return `${name} +$${w.share}`;
+        }).join(', ');
+        html += `<div class="side-pot">Side Pot #${idx + 1}: ${line}${p.tie ? ' (tie)' : ''}</div>`;
+      });
+    }
+    banner.innerHTML = html;
+    window.DEBUG?.log('ui.result.render', { handId: data.lastResult.id, pots: pots.length });
+  } else if (banner) {
+    banner.remove();
   }
 
   if (data.state === 'hand' && data.hand?.status === 'preflop') {
