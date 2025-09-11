@@ -9,7 +9,7 @@ import {
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, runTransaction, onSnapshot,
+  getFirestore, doc, runTransaction, onSnapshot,
   serverTimestamp, updateDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
@@ -20,9 +20,15 @@ const PRESENCE = {
   LOCK_TTL_MS: 20_000
 };
 
+const DEAL_LOCK = {
+  TTL_MS: 5000,
+  SWEEP_INTERVAL_MS: 3000
+};
+
 let roomCode = null;
 let heartbeatTimer = null;
 let sweeperTimer = null;
+let dealLockSweeperTimer = null;
 let currentRoomRef = null;
 let currentRoom = null;
 let derivedDealerSeat = null;
@@ -93,6 +99,11 @@ if (variantSelect) {
   if (variantSelect.options[0]) variantSelect.options[0].value = 'HE';
   if (variantSelect.options[1]) variantSelect.options[1].value = 'OMA';
 }
+const headerEl = document.querySelector('header');
+const lockInfoEl = document.createElement('span');
+lockInfoEl.id = 'lock-info';
+lockInfoEl.className = 'lock-info';
+headerEl?.appendChild(lockInfoEl);
 
 const uiDealLock = { active: false, timer: null, TTL_MS: 3000 };
 function setUiDealLock(on) {
@@ -116,11 +127,11 @@ function setUiDealLock(on) {
   }
 }
 
-function computeEarliestJoinerSeat(room) {
+function computeEarliestJoinerSeatFromRoom(room) {
   const { players = {}, seats = [] } = room || {};
   let best = null;
   Object.entries(players).forEach(([pid, p]) => {
-    const seatIdx = p?.seat ?? null;
+    const seatIdx = (p && typeof p.seat === 'number') ? p.seat : null;
     if (seatIdx == null) return;
     const ts = p?.joinedAt?.toMillis?.() ?? p?.lastSeen?.toMillis?.() ?? Number.MAX_SAFE_INTEGER;
     if (!best || ts < best.joinedAtMillis) best = { pid, seatIdx, joinedAtMillis: ts };
@@ -128,15 +139,99 @@ function computeEarliestJoinerSeat(room) {
   return best ? best.seatIdx : null;
 }
 
-function countActivePlayers(room, nowMs = Date.now()) {
-  const { players = {} } = room || {};
+function countActiveSeated(room, nowMs, staleMs) {
+  const players = room?.players || {};
   let n = 0;
   for (const p of Object.values(players)) {
+    if (typeof p?.seat !== 'number') continue;
     const last = p?.lastSeen?.toMillis?.() ?? 0;
-    const isActive = p?.active === true && (nowMs - last) <= PRESENCE.STALE_AFTER_MS;
-    if (isActive && typeof p?.seat === 'number') n++;
+    const active = p?.active === true && (nowMs - last) <= staleMs;
+    if (active) n++;
   }
   return n;
+}
+
+function isLockExpired(hand, nowMs) {
+  const atMs = hand?.lockedAt?.toMillis?.() ?? 0;
+  const ttl = hand?.lockTTLms ?? DEAL_LOCK.TTL_MS;
+  return nowMs - atMs > ttl;
+}
+
+async function tryTxDealLock(db, roomRef, uid) {
+  const nowMs = Date.now();
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(roomRef);
+    if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+    const room = snap.data();
+
+    if (room.state && room.state !== 'idle') {
+      if (room.state === 'dealLocked' && room.hand?.status === 'locked') {
+        if (room.hand.lockedBy === uid && !isLockExpired(room.hand, nowMs)) {
+          return { type: 'IDEMPOTENT', handId: room.hand.id };
+        }
+        if (!isLockExpired(room.hand, nowMs)) {
+          throw { code: 'LOCK_HELD', handId: room.hand.id };
+        }
+      } else {
+        throw { code: 'NOT_IDLE' };
+      }
+    }
+
+    if (!room.variant) throw { code: 'NO_VARIANT' };
+
+    const dealerSeat = (typeof room.dealerSeat === 'number')
+      ? room.dealerSeat
+      : computeEarliestJoinerSeatFromRoom(room);
+
+    const mySeat = room.players?.[uid]?.seat ?? null;
+    if (mySeat !== dealerSeat) throw { code: 'NOT_DEALER' };
+
+    const activeSeated = countActiveSeated(room, nowMs, PRESENCE.STALE_AFTER_MS);
+    if (activeSeated < 2) throw { code: 'PLAYERS_LT_2', activeSeated };
+
+    const handId = `${Date.now()}_${uid.slice(0,6)}_${Math.floor(Math.random()*1e4)}`;
+    const hand = {
+      id: handId,
+      status: 'locked',
+      variant: room.variant,
+      dealerSeat,
+      dealerPid: room.seats?.[dealerSeat] ?? null,
+      lockedBy: uid,
+      lockedAt: serverTimestamp(),
+      lockTTLms: DEAL_LOCK.TTL_MS
+    };
+
+    tx.update(roomRef, {
+      state: 'dealLocked',
+      hand
+    });
+
+    return { type: 'LOCKED', handId };
+  });
+}
+
+async function sweepExpiredDealLock(db, roomRef) {
+  const nowMs = Date.now();
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const room = snap.data();
+      if (room.state !== 'dealLocked' || room.hand?.status !== 'locked') return;
+
+      if (isLockExpired(room.hand, nowMs)) {
+        tx.update(roomRef, {
+          state: 'idle',
+          hand: null
+        });
+        throw { code: 'RELEASED' };
+      }
+    });
+  } catch (e) {
+    if (e.code === 'RELEASED') {
+      window.DEBUG?.log('hand.lock.sweeper.release.success', {});
+    }
+  }
 }
 
 function renderGatedControls() {
@@ -147,7 +242,8 @@ function renderGatedControls() {
   const isDealer = mySeat != null && derivedDealerSeat != null && mySeat === derivedDealerSeat;
 
   let reason = null;
-  if (!isDealer) reason = 'notDealer';
+  if (state === 'dealLocked') reason = 'lockHeld';
+  else if (!isDealer) reason = 'notDealer';
   else if (state !== 'idle') reason = 'notIdle';
   else if (activeSeated < 2) reason = 'players<2';
   else if (!(variant === 'HE' || variant === 'OMA')) reason = 'noVariant';
@@ -164,6 +260,7 @@ function renderGatedControls() {
     else if (reason === 'players<2') title = 'Need at least 2 active players';
     else if (reason === 'noVariant') title = 'Select a variant';
     else if (reason === 'uiLock') title = 'Please wait…';
+    else if (reason === 'lockHeld') title = 'Hand lock in progress';
     dealBtn.title = title;
   }
 
@@ -172,6 +269,7 @@ function renderGatedControls() {
     variantSelect.disabled = !variantEnabled;
     let vTitle = '';
     if (!isDealer) vTitle = 'Dealer only';
+    else if (state === 'dealLocked') vTitle = 'Hand lock in progress';
     else if (state !== 'idle') vTitle = 'Hand in progress';
     variantSelect.title = vTitle;
     if (variant) {
@@ -192,15 +290,25 @@ function renderGatedControls() {
 }
 
 if (dealBtn) {
-  dealBtn.addEventListener('click', () => {
+  dealBtn.addEventListener('click', async () => {
     if (dealBtn.disabled) {
       window.DEBUG?.log('ui.deal.click.blocked', { reason: lastGateReason || 'uiLock' });
       return;
     }
-    window.DEBUG?.log('ui.deal.click', { variant: currentRoom?.variant });
+    window.DEBUG?.log('ui.deal.click', { variant: currentRoom?.variant || null });
     setUiDealLock(true);
-    window.DEBUG?.log('hand.deal.compose.pending', { note: 'UI-only in this brief' });
     renderGatedControls();
+    if (!currentRoomRef) return;
+    try {
+      const res = await tryTxDealLock(db, currentRoomRef, auth.currentUser.uid);
+      if (res?.type === 'LOCKED') {
+        window.DEBUG?.log('hand.lock.tx.success', { handId: res.handId });
+      } else if (res?.type === 'IDEMPOTENT') {
+        window.DEBUG?.log('hand.lock.tx.idempotent', { handId: res.handId });
+      }
+    } catch (e) {
+      window.DEBUG?.log('hand.lock.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+    }
   });
 }
 
@@ -453,6 +561,8 @@ async function submitJoin(mode) {
 
     startHeartbeat(roomRef, uid);
     startEvictionSweeper(roomRef, uid);
+    clearInterval(dealLockSweeperTimer);
+    dealLockSweeperTimer = setInterval(() => sweepExpiredDealLock(db, roomRef), DEAL_LOCK.SWEEP_INTERVAL_MS);
 
     if (roomUnsub) roomUnsub();
     roomUnsub = onSnapshot(roomRef, (snap) => {
@@ -475,20 +585,32 @@ async function submitJoin(mode) {
 
 function renderRoom(data) {
   currentRoom = data;
-  activeSeated = countActivePlayers(data);
+  activeSeated = countActiveSeated(data, Date.now(), PRESENCE.STALE_AFTER_MS);
   let source = 'none';
   if (data.state === 'idle') {
     if (typeof data.dealerSeat === 'number') {
       derivedDealerSeat = data.dealerSeat;
       source = 'room';
     } else {
-      derivedDealerSeat = computeEarliestJoinerSeat(data);
+      derivedDealerSeat = computeEarliestJoinerSeatFromRoom(data);
       source = derivedDealerSeat == null ? 'none' : 'derived';
     }
+  } else if (data.state === 'dealLocked') {
+    derivedDealerSeat = data.hand?.dealerSeat ?? null;
+    source = derivedDealerSeat == null ? 'none' : 'hand';
   } else {
     derivedDealerSeat = null;
   }
   window.DEBUG?.log('dealer.compute', { derivedSeat: derivedDealerSeat, source });
+
+  if (lockInfoEl) {
+    if (data.state === 'dealLocked' && data.hand?.status === 'locked') {
+      const id = data.hand.id || '';
+      lockInfoEl.textContent = `Lock: ${id.slice(-4)}…`;
+    } else {
+      lockInfoEl.textContent = '';
+    }
+  }
 
   const uid = auth.currentUser?.uid;
   const mySeat = data.players?.[uid]?.seat ?? null;
@@ -532,7 +654,7 @@ function renderRoom(data) {
     }
 
     let dealerEl = badgesEl.querySelector('.dealer-btn');
-    if (data.state === 'idle' && derivedDealerSeat != null && sIdx === derivedDealerSeat) {
+    if ((data.state === 'idle' || data.state === 'dealLocked') && derivedDealerSeat != null && sIdx === derivedDealerSeat) {
       if (!dealerEl) {
         dealerEl = document.createElement('span');
         dealerEl.className = 'dealer-btn';
