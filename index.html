@@ -76,6 +76,8 @@
       display: flex; align-items: center; justify-content: center; color: #000;
       font-size: 14px; font-weight: 600;
     }
+    .seat .card.empty { background: #1a2247; border:1px dashed #2a356e; color:transparent; }
+    .seat .card.back { background:#fff; }
     .seat.me { border: 2px solid var(--accent); border-radius: 8px; padding: 2px; }
     .badge { font-size: 10px; padding: 2px 4px; border-radius: 4px; background: var(--card); border:1px solid #1a2247; }
   </style>
@@ -148,7 +150,8 @@
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
     import {
       getFirestore, serverTimestamp, collection, doc, getDocs, onSnapshot,
-      setDoc, updateDoc, deleteDoc, query, orderBy, limit, where
+      setDoc, updateDoc, deleteDoc, query, orderBy, limit, where,
+      runTransaction, deleteField
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     // --------- Config (use EXACTLY as provided) ----------
@@ -197,7 +200,6 @@
     let unsubPlayers = null;// players listener
     let lastRoomState = null;
     let lastPlayers = [];
-    let autoNext = null;
 
     // ---------- Helpers ----------
     const dollars = (cents) => (cents / 100).toFixed(2);
@@ -210,6 +212,7 @@
       });
       return out;
     };
+    const cardText = (c) => (c ? `${c.rank || ""}${c.suit || ""}` : "");
 
     // ---------- Auth with per-tab session ----------
     await setPersistence(auth, browserSessionPersistence);
@@ -257,7 +260,7 @@
         log("lobby.join.click", { code, name });
         const playersRef = collection(db, "rooms", code, "players");
         const snap = await getDocs(playersRef);
-        const active = snap.docs.filter(d => !(d.data().leftAt)).length;
+        const active = snap.docs.filter(d => !(d.data().leftAt) && !(d.data().eliminated)).length;
         if (active >= 9) { alert("Room full"); return; }
         const playerDoc = doc(playersRef, auth.currentUser.uid);
         await setDoc(playerDoc, sanitize({
@@ -301,17 +304,6 @@
         renderSeats(lastPlayers, r);
         log("room.snapshot", { phase: r.phase || "idle", street: r.street || "idle", potC: r.potC || 0 });
         decideDealVisibility(r);
-
-        if (r.phase === "idle" && r.lastResult && !autoNext) {
-          autoNext = setTimeout(() => {
-            autoNext = null;
-            if ($deal.disabled) return;
-            log("auto.deal", { room: roomCode });
-            $deal.click();
-          }, 5000);
-        } else if (r.phase !== "idle" && autoNext) {
-          clearTimeout(autoNext); autoNext = null;
-        }
       });
 
       // Players
@@ -322,11 +314,11 @@
         snap.forEach(d => players.push(d.data()));
         players.sort((a,b) => (a.name||"").localeCompare(b.name||""));
         lastPlayers = players;
-        const active = players.filter(p => !p.leftAt).length;
+        const active = players.filter(p => !p.leftAt && !p.eliminated).length;
         $activeCountLbl.textContent = String(active);
         renderPlayers(players);
         renderSeats(players, lastRoomState);
-        log("players.snapshot", { n: players.length, activeCount: active, players: players.map(p => ({ id:p.id, name:p.name, stack:p.stack, leftAt: !!p.leftAt })) });
+        log("players.snapshot", { n: players.length, activeCount: active, players: players.map(p => ({ id:p.id, name:p.name, stack:p.stack, leftAt: !!p.leftAt, eliminated: !!p.eliminated })) });
       });
     }
 
@@ -369,9 +361,12 @@
         const left = 50 + Math.sin(ang) * 40;
         const top = 50 - Math.cos(ang) * 40;
         const hole = (p.hole || []);
-        const cardsHtml = (p.id === me.uid) ?
-          hole.map(c=>`<div class="card">${c}</div>`).join('') :
-          '<div class="card">🂠</div><div class="card">🂠</div>';
+        let cardsHtml = '<div class="card empty"></div><div class="card empty"></div>';
+        if (hole.length === 2) {
+          cardsHtml = (p.id === me?.uid)
+            ? hole.map(c=>`<div class="card">${cardText(c)}</div>`).join('')
+            : '<div class="card back">🂠</div><div class="card back">🂠</div>';
+        }
         const badges = [];
         if (room?.dealerId === p.id) badges.push('D');
         if (room?.bet?.committed && room.bet.committed[p.id]) {
@@ -387,10 +382,15 @@
       }
 
       const boardCards = [];
-      if (show.flop) boardCards.push(...board.flop);
-      if (show.turn) boardCards.push(...board.turn);
-      if (show.river) boardCards.push(...board.river);
-      const boardHtml = boardCards.map(c=>`<div class="card">${c}</div>`).join('');
+      if (show.flop) boardCards.push(...(board.flop || []));
+      if (show.turn) boardCards.push(...(board.turn || []));
+      if (show.river) boardCards.push(...(board.river || []));
+      const boardHtmlArr = [];
+      for (let i=0;i<5;i++) {
+        const c = boardCards[i];
+        boardHtmlArr.push(c ? `<div class="card">${cardText(c)}</div>` : '<div class="card empty"></div>');
+      }
+      const boardHtml = boardHtmlArr.join('');
 
       $table.innerHTML = `<div class="seat" style="left:50%;top:50%;width:auto;height:auto"><div class="cards">${boardHtml}</div></div>` + seatsHtml.join('');
     }
@@ -401,9 +401,10 @@
       const players = [];
       playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
 
-      const active = players.filter(p => !p.leftAt).length;
+      const activePlayers = players.filter(p => !p.leftAt && !p.eliminated);
+      const active = activePlayers.length;
       let earliest = null, earliestTs = 1e18;
-      players.forEach(p => {
+      activePlayers.forEach(p => {
         const ts = p.joinedAt?.seconds ?? p.joinedAt?._seconds ?? null;
         const millis = ts ? ts * 1000 : null;
         if (millis !== null && millis < earliestTs) { earliestTs = millis; earliest = p.id; }
@@ -419,106 +420,87 @@
       });
     }
 
-    // ---------- Deal click (Step 0: minimal safe write; no nested arrays) ----------
+    // ---------- Deal click (transactional first-hand deal) ----------
     $deal.onclick = async () => {
       if (!roomCode) return;
-      log("ui.deal.click", { room: roomCode });
-
-      const roomRef = doc(db, "rooms", roomCode);
+      log("ui.deal.click", { room: roomCode, uid: me?.uid, name: me?.name });
+      const room = lastRoomState || {};
+      if (room.phase !== "idle" || room.street !== "idle") {
+        log("hand.deal.txn.abort", { reason: "not idle", phase: room.phase, street: room.street });
+        return;
+      }
       const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
       const players = [];
       playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
-      const activePlayers = players.filter(p => !p.leftAt);
-
-      // Determine dealer = earliest joiner for first hand
+      const activePlayers = players.filter(p => !p.leftAt && !p.eliminated);
+      if (activePlayers.length < 2) {
+        log("hand.deal.txn.abort", { reason: "<2 players", active: activePlayers.length });
+        return;
+      }
       let earliest = null, earliestTs = 1e18;
-      players.forEach(p => {
+      activePlayers.forEach(p => {
         const ts = p.joinedAt?.seconds ?? p.joinedAt?._seconds ?? null;
         const millis = ts ? ts * 1000 : null;
         if (millis !== null && millis < earliestTs) { earliestTs = millis; earliest = p.id; }
       });
-
-      // Order clockwise starting from dealer (simplified: by joinedAt order)
-      activePlayers.sort((a,b) => {
-        const ta = a.joinedAt?.seconds ?? 0, tb = b.joinedAt?.seconds ?? 0;
-        return ta - tb;
-      });
-      const order = activePlayers.map(p => p.id);
+      if (auth.currentUser.uid !== earliest) {
+        log("hand.deal.txn.abort", { reason: "not-earliest", earliest, me: auth.currentUser.uid });
+        return;
+      }
+      activePlayers.sort((a,b)=>{ const ta=a.joinedAt?.seconds??0, tb=b.joinedAt?.seconds??0; return ta-tb; });
+      const order = activePlayers.map(p=>p.id);
       const dealerIdx = Math.max(0, order.indexOf(earliest));
-      const orderPF = order.slice(dealerIdx).concat(order.slice(0, dealerIdx));
-
-      // Build deck and deal cards
+      const orderPF = order.slice(dealerIdx).concat(order.slice(0,dealerIdx));
       const ranks = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
       const suits = ['h','d','c','s'];
       const deck = [];
-      for (const rnk of ranks) for (const s of suits) deck.push(rnk+s);
-      for (let i = deck.length-1; i>0; i--) { const j = Math.floor(Math.random()* (i+1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
-
-      for (const p of activePlayers) {
-        const cards = [deck.pop(), deck.pop()];
-        await updateDoc(doc(db, "rooms", roomCode, "players", p.id), { hole: cards });
-        log("hand.deal.hole", { pid:p.id, cards });
+      for (const r of ranks) for (const s of suits) deck.push({ rank:r, suit:s });
+      for (let i=deck.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [deck[i],deck[j]]=[deck[j],deck[i]]; }
+      const roomRef = doc(db, "rooms", roomCode);
+      log("hand.deal.txn.start", { room: roomCode });
+      try {
+        const result = await runTransaction(db, async (tx) => {
+          const roomSnap = await tx.get(roomRef);
+          const r = roomSnap.data() || {};
+          if (r.phase !== "idle" || r.street !== "idle" || r.dealing) throw new Error("preconditions");
+          tx.update(roomRef, { dealing: true, dealingAt: serverTimestamp() });
+          const sbC = r?.blinds?.sbC ?? 25;
+          const bbC = r?.blinds?.bbC ?? 50;
+          const committed = {};
+          let potC = 0;
+          const deductions = [];
+          const sbIndex = (orderPF.length === 2) ? 0 : 1;
+          const bbIndex = (orderPF.length === 2) ? 1 : 2;
+          for (const pid of orderPF) {
+            const pRef = doc(db, "rooms", roomCode, "players", pid);
+            const pSnap = await tx.get(pRef);
+            const pdata = pSnap.data() || {};
+            if (pdata.leftAt || pdata.eliminated) throw new Error("player-left");
+            const cards = [deck.pop(), deck.pop()];
+            let stackBefore = Number(pdata.stack || 0);
+            let stackAfter = stackBefore;
+            let commitC = 0;
+            if (pid === orderPF[sbIndex]) { stackAfter -= sbC/100; commitC = sbC; }
+            if (pid === orderPF[bbIndex]) { stackAfter -= bbC/100; commitC = bbC; }
+            stackAfter = Number(stackAfter.toFixed(2));
+            committed[pid] = commitC;
+            potC += commitC;
+            tx.update(pRef, { hole: cards, stack: stackAfter });
+            deductions.push({ pid, before: stackBefore, after: stackAfter });
+          }
+          const sbPid = orderPF[sbIndex];
+          const bbPid = orderPF[bbIndex];
+          const turnIdx = orderPF.length === 2 ? 0 : ((bbIndex + 1) % orderPF.length);
+          const bet = { order: orderPF, turnIdx, currentBet: bbC, minBet: bbC, lastRaise: bbC, committed, awaiting: orderPF, lastAggressor: bbPid };
+          tx.update(roomRef, { phase: "betting", street: "preflop", dealerId: earliest, potC, bet, board:{flop:[],turn:[],river:[]}, showBoard:{flop:false,turn:false,river:false}, totalCommittedC:{}, lastResult:null, dealing: deleteField(), dealingAt: deleteField() });
+          return { deductions, summary: { dealer: earliest, sb: sbPid, bb: bbPid, order: orderPF, potC } };
+        });
+        result.deductions.forEach(d => log("hand.deal.deduct", d));
+        log("hand.deal.txn.commit", result.summary);
+      } catch (err) {
+        log("hand.deal.txn.abort", { reason: err.message });
+        log("error.firestore", { path: roomRef.path, message: err.message });
       }
-      const flop = [deck.pop(), deck.pop(), deck.pop()];
-      const turn = [deck.pop()];
-      const river = [deck.pop()];
-
-      // blinds
-      const roomSnap = await (await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js")).getDoc(roomRef);
-      const r = roomSnap.exists() ? roomSnap.data() : {};
-      const sbC = r?.blinds?.sbC ?? 25;
-      const bbC = r?.blinds?.bbC ?? 50;
-
-      const sbPid = orderPF[1 % orderPF.length];
-      const bbPid = orderPF[2 % orderPF.length];
-      const committed = {};
-      if (sbPid) committed[sbPid] = sbC;
-      if (bbPid) committed[bbPid] = bbC;
-      const potC = (sbC||0) + (bbC||0);
-
-      log("hand.deal.compose", { dealerId: earliest, sbPid, bbPid, order: orderPF, potC, committed });
-
-      await updateDoc(roomRef, sanitize({
-        phase: "betting",
-        street: "preflop",
-        dealerId: earliest || null,
-        potC: potC,
-        bet: {
-          order: orderPF,
-          turnIdx: 3 % orderPF.length,
-          currentBet: bbC,
-          minBet: bbC,
-          lastRaise: bbC,
-          committed,
-          awaiting: orderPF,
-          lastAggressor: bbPid || null
-        },
-        board: { flop, turn, river },
-        showBoard: { flop:false, turn:false, river:false },
-        handId: Date.now(),
-        lastResult: null
-      }));
-      log("hand.deal.success", { code: roomCode, nPlayers: activePlayers.length });
-
-      // auto advance streets and finish hand (very simplified)
-      setTimeout(()=>updateDoc(roomRef, { street:"flop", showBoard: { flop:true, turn:false, river:false }}), 1000);
-      setTimeout(()=>updateDoc(roomRef, { street:"turn", showBoard: { flop:true, turn:true, river:false }}), 2000);
-      setTimeout(()=>updateDoc(roomRef, { street:"river", showBoard: { flop:true, turn:true, river:true }}), 3000);
-      setTimeout(async ()=>{
-        const winnerId = orderPF[0];
-        const winner = activePlayers.find(p=>p.id===winnerId);
-        if (winner) {
-          await updateDoc(doc(db, "rooms", roomCode, "players", winnerId), { stack: (winner.stack||0) + potC/100 });
-        }
-        const nextDealer = orderPF[1 % orderPF.length];
-        await updateDoc(roomRef, sanitize({
-          phase:"idle", street:"idle", dealerId: nextDealer,
-          potC:0, bet:null,
-          board:{flop:[],turn:[],river:[]}, showBoard:{flop:false,turn:false,river:false},
-          lastResult:{ winnerId, potC }
-        }));
-        log("hand.end", { winnerId, potC });
-      }, 4000);
     };
   </script>
 </body>
