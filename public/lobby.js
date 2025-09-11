@@ -31,12 +31,12 @@ async function ensureWallet(uid){
   if(!snap.exists()){
     await setDoc(wRef,{ balance:100, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
     walletBalance = 100;
-    debug.log('wallet.init',{ balance:100 });
   }else{
     walletBalance = snap.data().balance || 0;
   }
-  const balEl = document.getElementById('wallet-balance');
-  if(balEl) balEl.textContent = `Wallet: $${walletBalance}`;
+  debug.log('wallet.init',{ balance:walletBalance });
+  const balEl = document.getElementById('wallet-badge');
+  if(balEl) balEl.textContent = `$${walletBalance}`;
 }
 
 onAuthStateChanged(auth, async user => {
@@ -66,7 +66,7 @@ function loadRooms(){
         btn.title = 'Insufficient balance';
       }else{
         btn.onclick = () => {
-          location.href = `/index.html?room=${encodeURIComponent(room.code)}`;
+          location.href = `/table.html?room=${encodeURIComponent(room.code)}`;
         };
       }
       card.appendChild(info);
