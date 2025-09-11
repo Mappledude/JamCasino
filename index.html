@@ -247,7 +247,17 @@
       });
       return out;
     };
-    const cardText = (c) => (c ? `${c.rank || ""}${c.suit || ""}` : "");
+    // Accepts a card as an object `{rank, suit}` or a string like "As".
+    // If given a string, parse it to an object for backward compatibility.
+    const cardText = (c) => {
+      if (!c) return "";
+      if (typeof c === "string") {
+        const rank = c.slice(0, -1);
+        const suit = c.slice(-1);
+        c = { rank, suit };
+      }
+      return `${c.rank || ""}${c.suit || ""}`;
+    };
 
     // ---------- Auth with per-tab session ----------
     await setPersistence(auth, browserSessionPersistence);
