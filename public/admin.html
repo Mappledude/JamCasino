@@ -17,6 +17,10 @@
   <div class="card">
     <h2>Create Table</h2>
     <input id="room-code" type="text" maxlength="8" placeholder="Room code (optional)" />
+    <input id="min-buy" type="number" step="1" placeholder="Min Buy-in ($10)" />
+    <input id="max-buy" type="number" step="1" placeholder="Max Buy-in ($20)" />
+    <input id="sb" type="number" step="0.01" placeholder="Small Blind ($0.25)" />
+    <input id="bb" type="number" step="0.01" placeholder="Big Blind ($0.50)" />
     <button id="create-table">Create Table</button>
     <div id="room-link" class="hidden">
       <p>Share this link:</p>
@@ -28,7 +32,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-    import { getFirestore, doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
@@ -45,6 +49,10 @@
     const db = getFirestore(app);
 
     const codeInput = document.getElementById('room-code');
+    const minBuyInput = document.getElementById('min-buy');
+    const maxBuyInput = document.getElementById('max-buy');
+    const sbInput = document.getElementById('sb');
+    const bbInput = document.getElementById('bb');
     const createBtn = document.getElementById('create-table');
     const linkBox = document.getElementById('room-link');
     const linkHref = document.getElementById('link-href');
@@ -67,20 +75,31 @@
 
     createBtn.onclick = async () => {
       const code = (codeInput.value || randomCode()).toUpperCase();
-      await setDoc(doc(db, 'rooms', code), {
+      const min = parseFloat(minBuyInput.value) || 10;
+      const max = parseFloat(maxBuyInput.value) || 20;
+      const sb = parseFloat(sbInput.value) || 0.25;
+      const bb = parseFloat(bbInput.value) || 0.50;
+      const roomRef = doc(db,'rooms',code);
+      const existing = await getDoc(roomRef);
+      if (existing.exists()) {
+        log('admin.room.create.exists', { code });
+        return;
+      }
+      await setDoc(roomRef, {
         code,
         state:'idle',
         seats:Array(9).fill(null),
         players:{},
         dealerSeat:null,
         nextVariant:null,
+        config:{ minBuyIn:min, maxBuyIn:max, sb, bb },
         createdAt:serverTimestamp()
       });
       const url = `/index.html?room=${encodeURIComponent(code)}`;
       linkHref.href = url;
       linkHref.textContent = location.origin + url;
       linkBox.classList.remove('hidden');
-      log('admin.room.create.success', { code });
+      log('admin.room.create.success', { code, config:{min,max,sb,bb} });
     };
   </script>
 </body>

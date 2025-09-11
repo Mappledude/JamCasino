@@ -27,5 +27,11 @@ service cloud.firestore {
       allow read: if true;
       allow update, delete: if false;
     }
+
+    // Wallets: only owner can read/write
+    match /wallets/{playerId} {
+      allow read, update, create: if request.auth != null && request.auth.uid == playerId;
+      allow delete: if false;
+    }
   }
 }

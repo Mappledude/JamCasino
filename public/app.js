@@ -11,7 +11,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 import {
   getFirestore, doc, runTransaction, onSnapshot,
-  serverTimestamp, updateDoc, writeBatch, getDoc,
+  serverTimestamp, updateDoc, writeBatch, getDoc, setDoc,
   collection, addDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
@@ -73,11 +73,24 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+let walletBalance = 0;
+
+async function ensureWallet(uid){
+  const wRef = doc(db,'wallets',uid);
+  const snap = await getDoc(wRef);
+  if(!snap.exists()){
+    await setDoc(wRef,{ balance:100, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
+    walletBalance = 100;
+    debug.log('wallet.init',{ balance:100 });
+  }else{
+    walletBalance = snap.data().balance || 0;
+  }
+}
 
 await setPersistence(auth, browserSessionPersistence);
 await signInAnonymously(auth);
 
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
   if (!user) return;
   window.APP = window.APP || {};
   window.APP.playerId = user.uid;
@@ -85,6 +98,12 @@ onAuthStateChanged(auth, (user) => {
   const playerSpan = document.getElementById('player-id');
   if (playerSpan) playerSpan.textContent = user.uid;
 
+  await ensureWallet(user.uid);
+  const params = new URLSearchParams(location.search);
+  const codeParam = params.get('room');
+  if (codeParam) {
+    await joinRoomByCode(codeParam.toUpperCase());
+  }
   window.DEBUG?.log('firebase.init.ok', { appName: app.name });
   window.DEBUG?.log('auth.anon.signIn.success', { uid: user.uid, persistence: 'session' });
   window.DEBUG?.log('auth.state', { uid: user.uid });
@@ -122,6 +141,10 @@ if (!settleBtn) {
   settleBtn.textContent = 'Settle Hand';
   headerEl?.appendChild(settleBtn);
 }
+
+document.querySelectorAll('.seat').forEach((el, idx) => {
+  el.addEventListener('click', () => handleSeatClick(idx));
+});
 const lockInfoEl = document.createElement('span');
 lockInfoEl.id = 'lock-info';
 lockInfoEl.className = 'lock-info';
@@ -1040,16 +1063,17 @@ const roomCodeInput = document.getElementById('roomCode');
 const joinError = document.getElementById('join-error');
 
 function openJoin() {
+  if (!joinOverlay) return;
   joinOverlay.classList.remove('hidden');
-  joinError.textContent = '';
-  displayNameInput.classList.remove('invalid');
-  roomCodeInput.classList.remove('invalid');
-  setTimeout(() => displayNameInput.focus(), 0);
+  if (joinError) joinError.textContent = '';
+  displayNameInput?.classList.remove('invalid');
+  roomCodeInput?.classList.remove('invalid');
+  if (displayNameInput) setTimeout(() => displayNameInput.focus(), 0);
   debug.log('ui.join.open', {});
 }
 
 function closeJoin() {
-  joinOverlay.classList.add('hidden');
+  joinOverlay?.classList.add('hidden');
 }
 
 if (openJoinBtn) {
@@ -1062,8 +1086,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.getElementById('create-room').addEventListener('click', () => submitJoin('create'));
-document.getElementById('join-room').addEventListener('click', () => submitJoin('join'));
+const createBtn = document.getElementById('create-room');
+if (createBtn) createBtn.addEventListener('click', () => submitJoin('create'));
+const joinBtn = document.getElementById('join-room');
+if (joinBtn) joinBtn.addEventListener('click', () => submitJoin('join'));
 
 function startHeartbeat(roomRef, uid) {
   const tick = () => {
@@ -1139,6 +1165,48 @@ async function attemptEvict(roomRef, uid) {
   }
 }
 
+async function handleSeatClick(seatIdx){
+  const uid = auth.currentUser?.uid;
+  if(!uid || !currentRoomRef) return;
+  try{
+    await runTransaction(db, async tx => {
+      const roomSnap = await tx.get(currentRoomRef);
+      const room = roomSnap.data();
+      const cfg = room.config || {};
+      const min = cfg.minBuyIn || 10;
+      const seats = room.seats || [];
+      const players = room.players || {};
+      const stackMap = room.stacks || {};
+      const wRef = doc(db,'wallets',uid);
+      const wSnap = await tx.get(wRef);
+      const bal = wSnap.data()?.balance || 0;
+      if(seats[seatIdx] && seats[seatIdx] !== uid) throw {code:'SEAT_TAKEN'};
+      if(seats[seatIdx] === uid){
+        if(room.state === 'hand') throw {code:'IN_HAND'};
+        const stack = stackMap[uid] || 0;
+        tx.update(wRef,{ balance: bal + stack, updatedAt:serverTimestamp() });
+        seats[seatIdx] = null;
+        players[uid].seat = null;
+        delete stackMap[uid];
+        tx.update(currentRoomRef,{ seats, players, stacks: stackMap });
+        debug.log('seat.leave.success',{ seat: seatIdx });
+      }else{
+        if(bal < min) throw {code:'INSUFFICIENT'};
+        tx.update(wRef,{ balance: bal - min, updatedAt:serverTimestamp() });
+        seats[seatIdx] = uid;
+        players[uid] = players[uid] || { displayName:null, seat:null, lastSeen:serverTimestamp(), variantPref:null };
+        players[uid].seat = seatIdx;
+        stackMap[uid] = (stackMap[uid] || 0) + min;
+        tx.update(currentRoomRef,{ seats, players, stacks: stackMap });
+        debug.log('seat.claim.success',{ seat: seatIdx });
+        debug.log('buyin.success',{ amount: min });
+      }
+    });
+  }catch(e){
+    debug.log('seat.click.error',{ code: e.code || 'UNKNOWN' });
+  }
+}
+
 function evaluateAndRenderGate() {
   if (!currentRoom) return;
   const uid = auth.currentUser?.uid;
@@ -1177,6 +1245,49 @@ function startEvictionSweeper(roomRef, uid) {
 }
 
 let roomUnsub = null;
+
+async function joinRoomByCode(code){
+  const uid = auth.currentUser?.uid;
+  if(!uid) return;
+  const displayName = 'Player';
+  const seat = await runTransaction(db, async (tx) => {
+    const roomRef = doc(db,'rooms',code);
+    const snap = await tx.get(roomRef);
+    if(!snap.exists()) throw { code:'ROOM_MISSING' };
+    const data = snap.data();
+    data.players = data.players || {};
+    const player = data.players[uid] || { displayName, seat:null, joinedAt: serverTimestamp() };
+    player.displayName = displayName;
+    player.active = true;
+    player.lastSeen = serverTimestamp();
+    data.players[uid] = player;
+    tx.set(roomRef,{ players: data.players }, { merge:true });
+    return player.seat;
+  });
+
+  roomCode = code;
+  window.APP = window.APP || {};
+  window.APP.roomCode = code;
+  document.getElementById('room-code').textContent = code;
+  currentRoomRef = doc(db,'rooms',code);
+  await updateDoc(currentRoomRef, {
+    [`players.${uid}.lastSeen`]: serverTimestamp(),
+    [`players.${uid}.active`]: true
+  });
+  startHeartbeat(currentRoomRef, uid);
+  startEvictionSweeper(currentRoomRef, uid);
+  clearInterval(dealLockSweeperTimer);
+  dealLockSweeperTimer = setInterval(() => sweepExpiredDealLock(db, currentRoomRef), DEAL_LOCK.SWEEP_INTERVAL_MS);
+  if (roomUnsub) roomUnsub();
+  roomUnsub = onSnapshot(currentRoomRef, (snap) => {
+    const data = snap.data();
+    renderRoom(data);
+    const playersCount = data.players ? Object.keys(data.players).length : 0;
+    const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
+    debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
+  });
+  debug.log('room.join.success', { code, seat });
+}
 
 async function submitJoin(mode) {
   const displayName = displayNameInput.value.trim();
@@ -1477,7 +1588,7 @@ function renderRoom(data) {
       nameEl.textContent = pid === uid ? `${player.displayName || 'Player'} (you)` : (player.displayName || 'Player');
       if (statusDot) statusDot.className = `status-dot ${player.active ? 'active' : ''}`;
       const bet = data.hand?.betting || {};
-      const stack = bet.stacks?.[pid];
+      const stack = bet.stacks?.[pid] ?? data.stacks?.[pid];
       if (stack != null) stackEl.textContent = `$${stack}`; else stackEl.textContent = '$—';
       seatEl.classList.toggle('me', pid === uid);
       seatEl.classList.toggle('folded', bet.in && bet.in[pid] === false);

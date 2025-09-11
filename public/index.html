@@ -8,7 +8,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="left">Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span> <span id="build-tag" class="build-tag"></span> <button id="open-join">Join or Create</button></div>
+    <div class="left">Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span> <span id="build-tag" class="build-tag"></span></div>
     <label class="variant-label">
       Next Hand Variant
       <select id="variant-pref" title="Only the upcoming dealer can change this">
@@ -73,6 +73,7 @@
           <label><input type="checkbox" data-group="betting" checked> betting</label>
           <label><input type="checkbox" data-group="presence" checked> presence</label>
           <label><input type="checkbox" data-group="settle" checked> settle</label>
+          <label><input type="checkbox" data-group="wallet" checked> wallet</label>
           <button id="btn-gate-inspector">Gating Inspector</button>
         </div>
       </div>
@@ -80,23 +81,6 @@
       <div id="debug-log"></div>
     </aside>
   </main>
-</div>
-<div id="join-overlay" class="hidden">
-  <div class="join-modal">
-    <h2>Join or Create Room</h2>
-    <label>Display Name
-      <input id="displayName" type="text" maxlength="20" />
-    </label>
-    <label>Room Code
-      <input id="roomCode" type="text" maxlength="8" />
-    </label>
-    <div id="join-error" class="error"></div>
-    <div class="buttons">
-      <button id="create-room">Create Room</button>
-      <button id="join-room">Join Room</button>
-    </div>
-  </div>
-</div>
 <script type="module" src="./app.js"></script>
 </body>
 </html>
