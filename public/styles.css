@@ -210,6 +210,15 @@ select:disabled {
   text-align: center;
 }
 
+.result-banner .variant-tag {
+  display: inline-block;
+  background: #ddd;
+  padding: 0 4px;
+  border-radius: 4px;
+  margin-right: 4px;
+  font-size: 12px;
+}
+
 .result-banner .side-pot {
   font-size: 12px;
 }
@@ -228,6 +237,18 @@ select:disabled {
 
 #card-tester {
   margin-bottom: 8px;
+}
+
+#debug-panel .debug-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.debug-filters label {
+  white-space: nowrap;
 }
 
 #card-preview img {

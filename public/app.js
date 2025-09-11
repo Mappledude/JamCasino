@@ -1,6 +1,6 @@
 import { verifyCardAssets, resolveCardSrc, resolveCardSrcByIndex, CARD_BACK_SRC } from './cards.js';
 import { Debug } from './debug.js';
-import { evalTexas7 } from './poker-eval.js';
+import { evalTexas7, evalOmaha, compareHands } from './poker-eval.js';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import {
   getAuth,
@@ -274,16 +274,6 @@ function buildSidePots(contribMap = {}, inMap = {}) {
     layerPids.forEach(pid => { remain[pid] -= floor; });
   }
   return pots;
-}
-
-function compareHandRanks(a, b) {
-  if (a.cat !== b.cat) return a.cat - b.cat;
-  const len = Math.max(a.key.length, b.key.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (a.key[i] || 0) - (b.key[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 function computeBoardNext(room, hand) {
@@ -727,9 +717,12 @@ if (settleBtn) {
       const board = hand.board || [];
       const handRanks = {};
       for (const pid of Object.keys(dealt)) {
-        const r = evalTexas7(dealt[pid], board);
+        const r = hand.variant === 'OMA' ? evalOmaha(dealt[pid], board) : evalTexas7(dealt[pid], board);
         handRanks[pid] = r;
         rankLabels[pid] = r.label;
+        if (hand.variant === 'OMA' && bet.in?.[pid]) {
+          window.DEBUG?.log('settle.omaha.rank', { pid, label: r.label });
+        }
       }
       const pots = buildSidePots(bet.contrib || {}, bet.in || {});
       window.DEBUG?.log('settle.pots.built', { count: pots.length });
@@ -738,9 +731,9 @@ if (settleBtn) {
         let best = null; let winners = [];
         for (const pid of p.eligibles) {
           const hr = handRanks[pid];
-          if (!best || compareHandRanks(hr, best) > 0) {
+          if (!best || compareHands(hr, best) > 0) {
             best = hr; winners = [pid];
-          } else if (compareHandRanks(hr, best) === 0) {
+          } else if (compareHands(hr, best) === 0) {
             winners.push(pid);
           }
         }
@@ -787,7 +780,7 @@ if (settleBtn) {
         if (path === 'showdown') {
           const b = h.betting || {};
           const allInClosed = Object.entries(b.in || {}).filter(([p, v]) => v).every(([pid]) => b.allIn?.[pid]);
-          if (h.status !== 'river' || (!(b.roundClosed || allInClosed)) || h.variant !== 'HE') {
+          if (h.status !== 'river' || (!(b.roundClosed || allInClosed)) || (h.variant !== 'HE' && h.variant !== 'OMA')) {
             throw { code: 'PRECONDITION_FAILED' };
           }
         }
@@ -824,7 +817,7 @@ if (settleBtn) {
         return { type: 'SETTLED', handId: h.id, pots: potsResolved.length, winners: Object.keys(payoutMap).length, path };
       });
       if (res?.type === 'SETTLED') {
-        window.DEBUG?.log('settle.tx.success', { handId: res.handId, pots: res.pots, winners: res.winners });
+        window.DEBUG?.log('settle.tx.success', { handId: res.handId, variant: hand.variant, pots: res.pots, winners: res.winners });
         if (path === 'foldAward') {
           const pid = Object.keys(payoutMap)[0];
           const amount = payoutMap[pid];
@@ -1584,7 +1577,8 @@ function renderRoom(data) {
       const name = data.players?.[pid]?.displayName || 'Player';
       return `${name} (+$${amt})`;
     }).join(', ');
-    let html = `Winners: ${winnersText}`;
+    const variantName = data.lastResult.variant === 'OMA' ? 'Omaha' : 'Texas';
+    let html = `<span class="variant-tag">${variantName}</span> Winners: ${winnersText}`;
     const pots = res.pots || [];
     if (pots.length > 1) {
       pots.forEach((p, idx) => {
@@ -1597,7 +1591,7 @@ function renderRoom(data) {
       });
     }
     banner.innerHTML = html;
-    window.DEBUG?.log('ui.result.render', { handId: data.lastResult.id, pots: pots.length });
+    window.DEBUG?.log('ui.result.render', { handId: data.lastResult.id, variant: data.lastResult.variant, pots: pots.length });
   } else if (banner) {
     banner.remove();
   }
