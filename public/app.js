@@ -43,6 +43,7 @@ let dealFlowRunning = false;
 let myHandUnsub = null;
 let myHandId = null;
 let myHandCards = null;
+let upcomingDealerPid = null;
 
 document.getElementById('debug-room').textContent = roomCode ?? '—';
 
@@ -102,10 +103,8 @@ document.getElementById('preview-btn').addEventListener('click', () => {
 });
 
 // --- Gated controls ---
-const dealBtn = document.getElementById('deal');
-const variantEl = document.getElementById('variant');
-const variantChip = document.getElementById('variant-chip');
-const VALID_VARIANTS = ['HE','OMA'];
+const prefEl = document.getElementById('variant-pref');
+const variantLockedChip = document.getElementById('variant-locked-chip');
 const headerEl = document.querySelector('header');
 let nextStreetBtn = document.getElementById('btn-next-street');
 if (!nextStreetBtn) {
@@ -114,7 +113,7 @@ if (!nextStreetBtn) {
   nextStreetBtn.disabled = true;
   nextStreetBtn.title = 'Dealer only';
   nextStreetBtn.textContent = 'Next Street';
-  const labelEl = variantEl?.parentNode || null;
+  const labelEl = prefEl?.parentNode || null;
   if (labelEl && labelEl.parentNode) {
     labelEl.parentNode.insertBefore(nextStreetBtn, labelEl);
   } else {
@@ -223,30 +222,48 @@ function computeDealGate(room, myUid, uiLockActive) {
   const now = Date.now();
   const { activeSeated, totalSeated } = countActivePlayers(room, now, myUid);
   const state = room?.state || null;
-  const variant = room?.variant || null;
   const handStatus = room?.hand?.status || null;
   let derivedSeat = null;
-  if (state === 'idle') {
+  let upcomingSeat = null;
+  if (state === 'hand' || state === 'dealLocked') {
+    const currentSeat = room.hand?.dealerSeat ?? (typeof room?.dealerSeat === 'number' ? room.dealerSeat : deriveDealerSeat(room).seat);
+    derivedSeat = currentSeat;
+    upcomingSeat = nextOccupiedLeftOf(currentSeat, room.seats || []);
+    window.DEBUG?.log('dealer.compute', { derivedSeat: currentSeat, source: 'hand', upcomingSeat });
+  } else if (typeof room?.dealerSeat === 'number') {
+    derivedSeat = room.dealerSeat;
+    upcomingSeat = room.dealerSeat;
+    window.DEBUG?.log('dealer.compute', { derivedSeat, source: 'room.dealerSeat' });
+  } else {
     const { seat, source } = deriveDealerSeat(room);
     derivedSeat = seat;
+    upcomingSeat = seat;
     window.DEBUG?.log('dealer.compute', { derivedSeat: seat, source });
-  } else if (state === 'dealLocked' || state === 'hand') {
-    derivedSeat = room.hand?.dealerSeat ?? null;
-    window.DEBUG?.log('dealer.compute', { derivedSeat, source: 'hand' });
-  } else {
-    window.DEBUG?.log('dealer.compute', { derivedSeat: null, source: 'seatFallback' });
   }
+  const upcomingPid = room.seats?.[upcomingSeat] || null;
   const mySeat = room.players?.[myUid]?.seat ?? null;
   const isDealer = mySeat != null && derivedSeat != null && mySeat === derivedSeat;
+  const lockedVariant = room.nextVariant?.value || null;
   const reasons = [];
-  if (!VALID_VARIANTS.includes(variant)) reasons.push('noVariant');
   if (state === 'dealLocked') reasons.push('lockHeld');
   if (state !== 'idle') reasons.push('notIdle');
+  if (!lockedVariant) reasons.push('noVariant');
   if (activeSeated < 2) reasons.push('players<2');
   if (!isDealer) reasons.push('notDealer');
   if (uiLockActive) reasons.push('uiLock');
   const eligible = reasons.length === 0;
-  return { eligible, reasons, derivedDealerSeat: derivedSeat, isDealer, activeSeated, totalSeated, state, variant, handStatus };
+  return {
+    eligible,
+    reasons,
+    derivedDealerSeat: derivedSeat,
+    upcomingDealerPid: upcomingPid,
+    isDealer,
+    activeSeated,
+    totalSeated,
+    state,
+    handStatus,
+    lockedVariant
+  };
 }
 
 function isLockExpired(hand, nowMs) {
@@ -429,15 +446,12 @@ async function tryTxDealLock(db, roomRef, uid) {
       }
     }
 
-    if (!room.variant) throw { code: 'NO_VARIANT' };
+    const locked = room.nextVariant?.value;
+    if (!locked) throw { code: 'NO_VARIANT_LOCKED' };
 
-    const { seat: derivedSeat } = deriveDealerSeat(room);
-    const dealerSeat = (typeof room.dealerSeat === 'number')
-      ? room.dealerSeat
-      : derivedSeat;
-
-    const mySeat = room.players?.[uid]?.seat ?? null;
-    if (mySeat !== dealerSeat) throw { code: 'NOT_DEALER' };
+    const dealerSeat = (typeof room.dealerSeat === 'number') ? room.dealerSeat : deriveDealerSeat(room).seat;
+    const dealerPid = room.seats?.[dealerSeat] ?? null;
+    if (uid !== room.nextVariant?.dealerPid || dealerPid !== room.nextVariant?.dealerPid) throw { code: 'NOT_DEALER' };
 
     const { activeSeated } = countActivePlayers(room, nowMs, uid);
     if (activeSeated < 2) throw { code: 'PLAYERS_LT_2', activeSeated };
@@ -446,9 +460,9 @@ async function tryTxDealLock(db, roomRef, uid) {
     const hand = {
       id: handId,
       status: 'locked',
-      variant: room.variant,
+      variant: locked,
       dealerSeat,
-      dealerPid: room.seats?.[dealerSeat] ?? null,
+      dealerPid,
       lockedBy: uid,
       lockedAt: serverTimestamp(),
       lockTTLms: DEAL_LOCK.TTL_MS
@@ -497,29 +511,27 @@ async function sweepExpiredDealLock(db, roomRef) {
 
 function renderGatedControls(gate, firstReason) {
   const state = gate.state;
-  const variant = gate.variant;
   const handStatus = gate.handStatus;
   const isDealer = gate.isDealer;
   lastGateReason = firstReason;
 
-  if (dealBtn) {
-    dealBtn.disabled = !gate.eligible;
-    dealBtn.setAttribute('aria-busy', uiDealLock.active ? 'true' : 'false');
-    let title = '';
-    if (firstReason === 'notDealer') title = 'Dealer only';
-    else if (firstReason === 'notIdle') title = 'Hand in progress';
-    else if (firstReason === 'players<2') title = 'Need at least 2 active players';
-    else if (firstReason === 'noVariant') title = 'Select a variant';
-    else if (firstReason === 'uiLock') title = 'Please wait…';
-    else if (firstReason === 'lockHeld') title = 'Hand lock in progress';
-    dealBtn.title = title;
+  if (prefEl) {
+    const prefPid = gate.upcomingDealerPid;
+    const prefVal = currentRoom?.players?.[prefPid]?.variantPref;
+    prefEl.value = prefVal === 'OMA' ? 'OMA' : 'HE';
+    const enabled = auth.currentUser?.uid === prefPid && (state === 'hand' || (state === 'idle' && !currentRoom?.nextVariant));
+    prefEl.disabled = !enabled;
+    prefEl.title = enabled ? 'Select variant preference' : 'Upcoming dealer only';
   }
-
-  if (variantEl) {
-    const variantEnabled = state === 'idle' && isDealer;
-    variantEl.disabled = !variantEnabled;
-    variantEl.title = variantEl.disabled ? (isDealer ? 'Room not idle' : 'Dealer only') : 'Select variant';
+  if (variantLockedChip) {
+    if (currentRoom?.nextVariant?.value) {
+      variantLockedChip.textContent = currentRoom.nextVariant.value === 'OMA' ? 'Omaha' : 'Texas';
+      variantLockedChip.classList.remove('hidden');
+    } else {
+      variantLockedChip.classList.add('hidden');
+    }
   }
+  window.DEBUG?.log('ui.variant.render', { locked: currentRoom?.nextVariant?.value || null, enabledForPid: gate.upcomingDealerPid });
 
   if (nextStreetBtn) {
     let nsReason = null;
@@ -623,40 +635,16 @@ function renderActionControls(room) {
   });
 }
 
-if (dealBtn) {
-  dealBtn.addEventListener('click', async () => {
-    if (dealBtn.disabled) {
-      window.DEBUG?.log('ui.deal.click.blocked', { reason: lastGateReason || 'uiLock' });
-      return;
-    }
-    window.DEBUG?.log('ui.deal.click', { variant: currentRoom?.variant || null });
-    setUiDealLock(true);
-    if (!currentRoomRef) return;
+if (prefEl) {
+  prefEl.onchange = async (e) => {
+    const val = e.target.value === 'OMA' ? 'OMA' : 'HE';
     try {
-      const res = await tryTxDealLock(db, currentRoomRef, auth.currentUser.uid);
-      if (res?.type === 'LOCKED') {
-        window.DEBUG?.log('hand.lock.tx.success', { handId: res.handId });
-      } else if (res?.type === 'IDEMPOTENT') {
-        window.DEBUG?.log('hand.lock.tx.idempotent', { handId: res.handId });
-      }
-    } catch (e) {
-      window.DEBUG?.log('hand.lock.tx.error', { code: e.code || 'UNKNOWN', detail: e });
-    }
-  });
-}
-
-if (variantEl) {
-  variantEl.onchange = async (e) => {
-    const val = e.target.value;
-    const value = VALID_VARIANTS.includes(val) ? val : null;
-    if (currentRoom) currentRoom.variant = value;
-    evaluateAndRenderGate();
-    if (!currentRoomRef) return;
-    try {
-      await updateDoc(currentRoomRef, { variant: value });
-      window.DEBUG?.log('variant.select', { value });
+      const pid = auth.currentUser?.uid;
+      if (!pid || !currentRoomRef) return;
+      await updateDoc(currentRoomRef, { [`players.${pid}.variantPref`]: val });
+      window.DEBUG?.log('variant.pref.set', { pid, value: val });
     } catch (err) {
-      window.DEBUG?.log('variant.select.error', { message: String(err) });
+      window.DEBUG?.log('variant.pref.error', { message: String(err) });
     }
   };
 }
@@ -832,6 +820,7 @@ if (settleBtn) {
           paidAt: serverTimestamp()
         };
 
+        const nextDealerSeat = nextOccupiedLeftOf(h.dealerSeat, roomTx.seats || []);
         tx.update(currentRoomRef, {
           state: 'idle',
           lastResult: {
@@ -841,15 +830,18 @@ if (settleBtn) {
             dealerSeat: h.dealerSeat,
             result
           },
-          dealerSeat: nextOccupiedLeftOf(h.dealerSeat, roomTx.seats || []),
+          dealerSeat: nextDealerSeat,
+          nextVariant: null,
           hand: null,
           ...playerUpdates
         });
 
-        return { type: 'SETTLED', handId: h.id, pots: potsResolved.length, winners: Object.keys(payoutMap).length, path };
+        return { type: 'SETTLED', handId: h.id, pots: potsResolved.length, winners: Object.keys(payoutMap).length, path, nextDealerSeat };
       });
       if (res?.type === 'SETTLED') {
         window.DEBUG?.log('settle.tx.success', { handId: res.handId, variant: hand.variant, pots: res.pots, winners: res.winners });
+        window.DEBUG?.log('dealer.rotate', { dealerSeat: res.nextDealerSeat });
+        window.DEBUG?.log('variant.lock.cleared', {});
         if (path === 'foldAward') {
           const pid = Object.keys(payoutMap)[0];
           const amount = payoutMap[pid];
@@ -1159,6 +1151,7 @@ function evaluateAndRenderGate() {
   const uid = auth.currentUser?.uid;
   const gate = computeDealGate(currentRoom, uid, uiDealLock.active);
   derivedDealerSeat = gate.derivedDealerSeat;
+  upcomingDealerPid = gate.upcomingDealerPid;
   activeSeated = gate.activeSeated;
   totalSeated = gate.totalSeated;
   const firstReason = gate.reasons[0] || null;
@@ -1169,7 +1162,7 @@ function evaluateAndRenderGate() {
   debug.updateGateInspector({
     state: gate.state,
     handStatus: gate.handStatus,
-    variant: gate.variant,
+    variant: gate.lockedVariant,
     activeSeated: gate.activeSeated,
     totalSeated: gate.totalSeated,
     derivedDealerSeat: gate.derivedDealerSeat,
@@ -1179,6 +1172,8 @@ function evaluateAndRenderGate() {
     firstReason,
     reasons: gate.reasons
   });
+  maybeLockNextVariant(currentRoom, gate);
+  maybeAutoDeal(currentRoom, gate);
 }
 
 function startEvictionSweeper(roomRef, uid) {
@@ -1231,9 +1226,9 @@ async function submitJoin(mode) {
           active: true,
           createdAt: serverTimestamp(),
           state: 'idle',
-          variant: null,
           dealerSeat: null,
           seats: [null, null, null, null, null, null, null, null, null],
+          nextVariant: null,
           players: {}
         };
         tx.set(roomRef, data);
@@ -1252,7 +1247,8 @@ async function submitJoin(mode) {
           active: true,
           seat: null,
           joinedAt: serverTimestamp(),
-          lastSeen: serverTimestamp()
+          lastSeen: serverTimestamp(),
+          variantPref: null
         };
       } else {
         player.displayName = displayName;
@@ -1445,20 +1441,6 @@ function renderRoom(data) {
   maybeInitTurn(data);
   maybeInitBetting(data);
   maybeAutoReleaseUiDealLock(data);
-  if (variantEl) {
-    if (VALID_VARIANTS.includes(data.variant)) {
-      variantEl.value = data.variant;
-      if (variantChip) {
-        variantChip.textContent = data.variant === 'HE' ? 'Texas' : 'Omaha';
-        variantChip.classList.remove('hidden');
-      }
-    } else {
-      variantEl.value = '';
-      if (variantChip) {
-        variantChip.classList.add('hidden');
-      }
-    }
-  }
   evaluateAndRenderGate();
 
   if (lockInfoEl) {
@@ -1724,6 +1706,60 @@ async function ensureRoomConfig(room) {
   room.config = { ...DEFAULT_CONFIG };
 }
 
+async function maybeLockNextVariant(room, gate) {
+  if (!room || room.state !== 'idle' || room.nextVariant) return;
+  try {
+    const res = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(currentRoomRef);
+      if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+      const r = snap.data();
+      if (r.state !== 'idle' || r.nextVariant) return { type: 'SKIP' };
+      let dealerSeat = typeof r.dealerSeat === 'number' ? r.dealerSeat : null;
+      if (dealerSeat == null) {
+        const { seat } = deriveDealerSeat(r);
+        dealerSeat = seat;
+      }
+      const dealerPid = r.seats?.[dealerSeat] || null;
+      if (!dealerPid) return { type: 'SKIP' };
+      const pref = r.players?.[dealerPid]?.variantPref;
+      const value = pref === 'OMA' ? 'OMA' : 'HE';
+      const update = {
+        nextVariant: { value, dealerPid, lockedAt: serverTimestamp() }
+      };
+      if (r.dealerSeat == null) update.dealerSeat = dealerSeat;
+      tx.update(currentRoomRef, update);
+      return { type: 'LOCKED', value, dealerPid };
+    });
+    if (res?.type === 'LOCKED') {
+      window.DEBUG?.log('variant.lock.next', { value: res.value, dealerPid: res.dealerPid });
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function maybeAutoDeal(room, gate) {
+  const uid = auth.currentUser?.uid;
+  const lockedVariant = room?.nextVariant?.value || null;
+  const isDealer = uid && room.nextVariant?.dealerPid === uid;
+  window.DEBUG?.log('autodeal.eligibility', { isDealer: !!isDealer, state: room?.state || null, lockedVariant, activeSeated: gate?.activeSeated || 0 });
+  if (!isDealer) return;
+  if (room.state !== 'idle') return;
+  if (!lockedVariant) return;
+  if ((gate?.activeSeated || 0) < 2) return;
+  if (!currentRoomRef) return;
+  try {
+    const res = await tryTxDealLock(db, currentRoomRef, uid);
+    if (res?.type === 'LOCKED') {
+      window.DEBUG?.log('hand.lock.tx.success', { handId: res.handId });
+    } else if (res?.type === 'IDEMPOTENT') {
+      window.DEBUG?.log('hand.lock.tx.idempotent', { handId: res.handId });
+    }
+  } catch (e) {
+    window.DEBUG?.log('hand.lock.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+  }
+}
+
 async function maybeRunDeal(room) {
   const uid = auth.currentUser?.uid;
   if (!room || room.state !== 'dealLocked') return;
@@ -1750,7 +1786,7 @@ async function runDealFlow(room) {
           throw { code: 'NOT_LOCK_OWNER' };
         }
         const now = serverTimestamp();
-        const holeCount = rm.variant === 'OMA' ? 4 : 2;
+        const holeCount = rm.hand?.variant === 'OMA' ? 4 : 2;
         const seatedPids = (rm.seats || []).filter(Boolean);
         const participants = seatedPids;
         tx.update(roomRef, {
