@@ -104,6 +104,19 @@ if (variantSelect) {
   if (variantSelect.options[1]) variantSelect.options[1].value = 'OMA';
 }
 const headerEl = document.querySelector('header');
+let nextStreetBtn = document.getElementById('btn-next-street');
+if (!nextStreetBtn) {
+  nextStreetBtn = document.createElement('button');
+  nextStreetBtn.id = 'btn-next-street';
+  nextStreetBtn.disabled = true;
+  nextStreetBtn.title = 'Dealer only';
+  nextStreetBtn.textContent = 'Next Street';
+  if (variantSelect && variantSelect.parentNode) {
+    variantSelect.parentNode.insertBefore(nextStreetBtn, variantSelect);
+  } else {
+    headerEl?.appendChild(nextStreetBtn);
+  }
+}
 const lockInfoEl = document.createElement('span');
 lockInfoEl.id = 'lock-info';
 lockInfoEl.className = 'lock-info';
@@ -190,6 +203,33 @@ function shuffledDeck(seed) {
   return deck;
 }
 
+function computeBoardNext(room, hand) {
+  const N = (hand.participants || []).length;
+  const holeCount = hand.holeCount || (hand.variant === 'OMA' ? 4 : 2);
+  const consumedHole = N * holeCount;
+
+  const seed = seedFromStrings(room.code, hand.id);
+  const deck = shuffledDeck(seed);
+
+  let cp = consumedHole;
+
+  const flopBurn = deck[cp++];
+  const flop = [deck[cp++], deck[cp++], deck[cp++]];
+
+  const turnBurn = deck[cp++];
+  const turn = deck[cp++];
+
+  const riverBurn = deck[cp++];
+  const river = deck[cp++];
+
+  const already = (hand.board || []).length;
+  if (already === 0) return { nextStatus: 'flop', toAppend: flop, revealCount: 3 };
+  if (already === 3) return { nextStatus: 'turn', toAppend: [turn], revealCount: 1 };
+  if (already === 4) return { nextStatus: 'river', toAppend: [river], revealCount: 1 };
+
+  return { nextStatus: null, toAppend: [], revealCount: 0 };
+}
+
 async function tryTxDealLock(db, roomRef, uid) {
   const nowMs = Date.now();
   return await runTransaction(db, async (tx) => {
@@ -272,6 +312,7 @@ function renderGatedControls() {
   const variant = currentRoom?.variant || null;
   const uid = auth.currentUser?.uid;
   const mySeat = currentRoom?.players?.[uid]?.seat ?? null;
+  const handStatus = currentRoom?.hand?.status || null;
   const isDealer = mySeat != null && derivedDealerSeat != null && mySeat === derivedDealerSeat;
 
   let reason = null;
@@ -313,12 +354,36 @@ function renderGatedControls() {
     }
   }
 
+  if (nextStreetBtn) {
+    let nsReason = null;
+    if (uiDealLock.active) nsReason = 'uiLock';
+    else if (state !== 'hand') nsReason = 'noHand';
+    else if (!isDealer) nsReason = 'notDealer';
+    else if (!['preflop', 'flop', 'turn'].includes(handStatus)) nsReason = 'complete';
+
+    nextStreetBtn.disabled = nsReason !== null;
+    let nsTitle = '';
+    if (nsReason === 'notDealer') nsTitle = 'Dealer only';
+    else if (nsReason === 'noHand') nsTitle = 'No hand in progress';
+    else if (nsReason === 'complete') nsTitle = 'All streets revealed';
+    else if (nsReason === 'uiLock') nsTitle = 'Please wait…';
+    nextStreetBtn.title = nsTitle;
+
+    let label = 'Next Street';
+    if (handStatus === 'preflop') label = 'Reveal Flop';
+    else if (handStatus === 'flop') label = 'Reveal Turn';
+    else if (handStatus === 'turn') label = 'Reveal River';
+    else if (handStatus === 'river') label = 'Showdown';
+    nextStreetBtn.textContent = label;
+  }
+
   window.DEBUG?.log('ui.gate.evaluate', {
     isDealer,
     state,
     activeSeated,
     variant: variant,
-    uiLock: uiDealLock.active
+    uiLock: uiDealLock.active,
+    handStatus
   });
 }
 
@@ -357,6 +422,57 @@ if (variantSelect) {
     }
     if (currentRoom) currentRoom.variant = value;
     renderGatedControls();
+  });
+}
+
+if (nextStreetBtn) {
+  nextStreetBtn.addEventListener('click', async () => {
+    window.DEBUG?.log('street.advance.click', { status: currentRoom?.hand?.status || null });
+    if (!currentRoomRef) return;
+    try {
+      const res = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(currentRoomRef);
+        if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+        const room = snap.data();
+        const hand = room.hand || {};
+
+        if (room.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+
+        const myUid = auth.currentUser.uid;
+        const mySeat = room.players?.[myUid]?.seat ?? null;
+        const dealerSeat = (typeof hand.dealerSeat === 'number') ? hand.dealerSeat : null;
+        if (mySeat !== dealerSeat) throw { code: 'NOT_DEALER' };
+
+        const valid = ['preflop', 'flop', 'turn'];
+        if (!valid.includes(hand.status)) throw { code: 'ALREADY_COMPLETE_OR_INVALID', status: hand.status };
+
+        const { nextStatus, toAppend, revealCount } = computeBoardNext(room, hand);
+        if (!nextStatus || !revealCount) {
+          return { type: 'IDEMPOTENT', status: hand.status, boardLen: (hand.board || []).length };
+        }
+
+        const newBoard = [ ...(hand.board || []), ...toAppend ];
+        tx.update(currentRoomRef, {
+          hand: {
+            ...hand,
+            status: nextStatus,
+            street: nextStatus,
+            board: newBoard,
+            lastRevealAt: serverTimestamp()
+          }
+        });
+
+        return { type: 'ADVANCED', status: nextStatus, appended: revealCount, boardLen: newBoard.length };
+      });
+
+      if (res?.type === 'ADVANCED') {
+        window.DEBUG?.log('street.advance.tx.success', res);
+      } else {
+        window.DEBUG?.log('street.advance.tx.idempotent', res);
+      }
+    } catch (e) {
+      window.DEBUG?.log('street.advance.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+    }
   });
 }
 
@@ -632,6 +748,9 @@ function renderRoom(data) {
   } else if (data.state === 'dealLocked') {
     derivedDealerSeat = data.hand?.dealerSeat ?? null;
     source = derivedDealerSeat == null ? 'none' : 'hand';
+  } else if (data.state === 'hand') {
+    derivedDealerSeat = data.hand?.dealerSeat ?? null;
+    source = derivedDealerSeat == null ? 'none' : 'hand';
   } else {
     derivedDealerSeat = null;
   }
@@ -727,6 +846,24 @@ function renderRoom(data) {
     } else {
       if (existingHole) existingHole.remove();
     }
+  }
+
+  const board = data.hand?.board || [];
+  const boardEl = document.getElementById('board');
+  if (boardEl) {
+    for (let i = 0; i < 5; i++) {
+      const slot = boardEl.children[i];
+      if (!slot) continue;
+      const cardIndex = board[i];
+      if (cardIndex) {
+        slot.style.backgroundImage = `url(${resolveCardSrcByIndex(cardIndex)})`;
+        slot.classList.remove('empty');
+      } else {
+        slot.style.backgroundImage = '';
+        slot.classList.add('empty');
+      }
+    }
+    window.DEBUG?.log('ui.board.render', { count: board.length, status: data.hand?.status || null });
   }
 
   if (data.state === 'hand' && data.hand?.status === 'preflop') {

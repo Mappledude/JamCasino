@@ -120,6 +120,7 @@ header {
 
 button:disabled,
 select:disabled {
+  opacity: 0.6;
   pointer-events: auto;
   cursor: not-allowed;
 }
