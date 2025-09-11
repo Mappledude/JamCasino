@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>JamCasino — Admin Table</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="app">
+  <header>
+    <div>Room: <span id="room-code">—</span></div>
+    <button id="deal" disabled>Deal</button>
+    <select id="variant" disabled>
+      <option>Hold'em</option>
+      <option>Omaha</option>
+    </select>
+  </header>
+  <div id="content">
+    <main class="table-wrap">
+      <div class="poker-table">
+        <div class="seat seat-0">
+          <div class="name">Seat 1</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-1">
+          <div class="name">Seat 2</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-2">
+          <div class="name">Seat 3</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-3">
+          <div class="name">Seat 4</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-4">
+          <div class="name">Seat 5</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-5">
+          <div class="name">Seat 6</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-6">
+          <div class="name">Seat 7</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-7">
+          <div class="name">Seat 8</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div class="seat seat-8">
+          <div class="name">Seat 9</div>
+          <div class="stack">$—</div>
+          <div class="badges"></div>
+        </div>
+        <div id="board">
+          <div class="card-slot empty"></div>
+          <div class="card-slot empty"></div>
+          <div class="card-slot empty"></div>
+          <div class="card-slot empty"></div>
+          <div class="card-slot empty"></div>
+        </div>
+        <div id="my-board">
+          <div class="hole-cards">
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+          </div>
+          <div class="action-bar">
+            <button disabled>Fold</button>
+            <button disabled>Check/Call</button>
+            <button disabled>Bet/Raise</button>
+          </div>
+        </div>
+      </div>
+    </main>
+    <aside id="debug-panel">
+      <div class="debug-header">
+        <div>room: <span id="debug-room">—</span></div>
+        <div>player: <span id="debug-player">—</span></div>
+        <button id="asset-check">Run Asset Check</button>
+        <label><input type="checkbox" id="auto-scroll" checked /> Auto-scroll</label>
+      </div>
+      <div id="card-tester">
+        <select id="test-rank">
+          <option>2</option>
+          <option>3</option>
+          <option>4</option>
+          <option>5</option>
+          <option>6</option>
+          <option>7</option>
+          <option>8</option>
+          <option>9</option>
+          <option>10</option>
+          <option>J</option>
+          <option>Q</option>
+          <option>K</option>
+          <option>A</option>
+        </select>
+        <select id="test-suit">
+          <option value="D">D</option>
+          <option value="C">C</option>
+          <option value="H">H</option>
+          <option value="S">S</option>
+        </select>
+        <button id="preview-btn">Preview</button>
+        <div id="card-preview"></div>
+      </div>
+      <div id="debug-log"></div>
+    </aside>
+  </div>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
