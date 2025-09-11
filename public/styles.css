@@ -113,6 +113,10 @@ header {
   gap: 8px;
 }
 
+.action-bar input[type="number"] {
+  width: 80px;
+}
+
 .action-bar button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -122,6 +126,37 @@ header {
   animation: turnPulse 1s infinite;
   box-shadow: 0 0 10px 2px rgba(255,255,0,0.9);
   border-radius: 8px;
+}
+
+.seat.folded {
+  opacity: 0.5;
+}
+
+.pot-badge {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255,255,255,0.8);
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.seat .committed {
+  font-size: 12px;
+  color: #555;
+}
+
+.all-in-badge {
+  display: inline-block;
+  background: #b00;
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
 }
 
 #my-board.my-turn {
