@@ -118,6 +118,27 @@ header {
   cursor: not-allowed;
 }
 
+.seat.turn {
+  animation: turnPulse 1s infinite;
+  box-shadow: 0 0 10px 2px rgba(255,255,0,0.9);
+  border-radius: 8px;
+}
+
+#my-board.my-turn {
+  animation: turnPulse 1s infinite;
+  box-shadow: 0 0 10px 2px rgba(255,255,0,0.9);
+  border-radius: 8px;
+}
+
+@keyframes turnPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px 2px rgba(255,255,0,0.9);
+  }
+  50% {
+    box-shadow: 0 0 10px 4px rgba(255,165,0,0.9);
+  }
+}
+
 button:disabled,
 select:disabled {
   opacity: 0.6;
