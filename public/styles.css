@@ -198,6 +198,27 @@ select:disabled {
   background: #fafafa;
 }
 
+.result-banner {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255,255,255,0.9);
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.result-banner .side-pot {
+  font-size: 12px;
+}
+
+.rank-label {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 #debug-panel .debug-header {
   display: flex;
   flex-direction: column;
