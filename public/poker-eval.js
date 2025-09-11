@@ -7,7 +7,8 @@ export function cardIndexToRankSuit(i) {
   return { r: rank, s: suit };
 }
 
-function evaluate5(cards) {
+// Core 5-card evaluator shared by Texas Hold'em and Omaha
+function evalFive(cards) {
   const cs = cards.map(cardIndexToRankSuit);
   let ranks = cs.map(c => c.r).sort((a,b)=>b-a);
   const suits = cs.map(c => c.s);
@@ -47,16 +48,18 @@ function evaluate5(cards) {
   return { cat, key, label };
 }
 
-function compare(a,b){
+// Lexicographic comparison of hand ranks
+export function compareHands(a, b) {
   if (a.cat !== b.cat) return a.cat - b.cat;
-  const len = Math.max(a.key.length,b.key.length);
-  for (let i=0;i<len;i++){
-    const diff = (a.key[i]||0) - (b.key[i]||0);
-    if(diff!==0) return diff;
+  const len = Math.max(a.key.length, b.key.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (a.key[i] || 0) - (b.key[i] || 0);
+    if (diff !== 0) return diff;
   }
   return 0;
 }
 
+// Evaluate the best 5-card hand from 7 cards (Texas Hold'em)
 export function evalTexas7(hole2, board5){
   const cards = hole2.concat(board5);
   let best = null;
@@ -64,8 +67,27 @@ export function evalTexas7(hole2, board5){
     for(let j=i+1;j<7;j++){
       const subset=[];
       for(let k=0;k<7;k++) if(k!==i && k!==j) subset.push(cards[k]);
-      const e = evaluate5(subset);
-      if(!best || compare(e,best)>0) best = e;
+      const e = evalFive(subset);
+      if(!best || compareHands(e,best)>0) best = e;
+    }
+  }
+  return best;
+}
+
+// Evaluate Omaha hands (exactly 2 hole cards + 3 board cards)
+export function evalOmaha(hole4, board5) {
+  const choose2 = [
+    [0,1],[0,2],[0,3],[1,2],[1,3],[2,3]
+  ];
+  const choose3 = [
+    [0,1,2],[0,1,3],[0,1,4],[0,2,3],[0,2,4],[0,3,4],[1,2,3],[1,2,4],[1,3,4],[2,3,4]
+  ];
+  let best = null;
+  for (const [a,b] of choose2) {
+    for (const [i,j,k] of choose3) {
+      const five = [hole4[a], hole4[b], board5[i], board5[j], board5[k]];
+      const rank = evalFive(five);
+      if (!best || compareHands(rank, best) > 0) best = rank;
     }
   }
   return best;

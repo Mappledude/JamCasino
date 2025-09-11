@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Public room docs are readable by everyone
+    match /rooms/{roomId} {
+      allow read: if true;
+
+      // Allow updates only to authenticated users for now (app enforces roles client-side).
+      // (Further hardening of room-field diffs can be added later.)
+      allow update: if request.auth != null;
+      allow create: if request.auth != null;
+    }
+
+    // PRIVATE: a player's own hole cards for a hand
+    // Only that player can read/write their doc.
+    match /rooms/{roomId}/players/{playerId}/hands/{handId} {
+      allow read, get, list: if request.auth != null && request.auth.uid == playerId;
+      allow create, update:  if request.auth != null && request.auth.uid == playerId;
+      allow delete: if false;
+    }
+
+    // Public per-hand actions: actor-auth required
+    match /rooms/{roomId}/hands/{handId}/actions/{actionId} {
+      allow create: if request.auth != null
+                    && request.resource.data.pid == request.auth.uid;
+      allow read: if true;
+      allow update, delete: if false;
+    }
+  }
+}

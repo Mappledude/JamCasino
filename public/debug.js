@@ -11,9 +11,28 @@ export class Debug {
         this.log('ui.debug.autoscroll.toggle', { enabled: this.autoScroll });
       });
     }
+
+    this.filterEl = document.getElementById('debug-filter');
+    const stored = localStorage.getItem('debug.filter.groups');
+    this.enabledGroups = new Set(stored ? JSON.parse(stored) : ['ui','hand','betting','street','settle','presence']);
+    if (this.filterEl) {
+      this.filterEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        const g = cb.dataset.group;
+        cb.checked = this.enabledGroups.has(g);
+        cb.addEventListener('change', () => {
+          if (cb.checked) this.enabledGroups.add(g); else this.enabledGroups.delete(g);
+          localStorage.setItem('debug.filter.groups', JSON.stringify([...this.enabledGroups]));
+          this.log('ui.debug.filter.change', { enabled: [...this.enabledGroups] });
+        });
+      });
+    }
   }
 
   log(event, payload = {}) {
+    const group = event.split('.')[0];
+    if (this.filterEl && this.filterEl.querySelector(`input[data-group="${group}"]`)) {
+      if (this.enabledGroups && !this.enabledGroups.has(group)) return;
+    }
     const entry = {
       ts: new Date().toISOString(),
       roomCode: this.roomCodeGetter ? this.roomCodeGetter() : null,
