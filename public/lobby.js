@@ -72,12 +72,12 @@ function subscribeRooms() {
       `;
       grid.appendChild(card);
     });
-    document.querySelectorAll('.join-btn').forEach((b) => {
+    grid.querySelectorAll('.join-btn').forEach((b) => {
       b.onclick = () => {
         const code = b.dataset.code;
         location.href = `/table.html?room=${encodeURIComponent(code)}`;
       };
     });
-    debug.log('lobby.rooms.render', { count: snap.size });
+    DEBUG?.log('lobby.rooms.render', { count: snap.size });
   });
 }

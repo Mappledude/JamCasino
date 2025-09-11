@@ -34,7 +34,7 @@ const DEFAULT_CONFIG = { sb: 25, bb: 50, startingStack: 10000 };
 const params = new URLSearchParams(location.search);
 const initialRoom = params.get('room');
 if (!initialRoom) {
-  location.replace('/index.html');
+  location.replace('/');
 }
 
 let roomCode = null;
@@ -182,7 +182,7 @@ onAuthStateChanged(auth, async (user) => {
         await safeUnseatAndCreditIfIdle();
       } catch(_) {}
       debug.log('nav.table.leave', { roomCode });
-      location.href = '/index.html';
+      location.href = '/';
     };
   }
 
