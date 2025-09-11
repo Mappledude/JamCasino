@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "jamcasino-36b9a",
     "public": ".",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
   }
