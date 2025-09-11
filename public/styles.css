@@ -251,6 +251,21 @@ select:disabled {
   white-space: nowrap;
 }
 
+#gating-inspector {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+#gating-inspector table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#gating-inspector td {
+  padding: 2px 4px;
+  border-bottom: 1px solid #eee;
+}
+
 #card-preview img {
   width: 72px;
   height: 96px;

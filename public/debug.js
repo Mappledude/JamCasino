@@ -26,6 +26,17 @@ export class Debug {
         });
       });
     }
+
+    this.gateToggleEl = document.getElementById('gate-inspector-toggle');
+    this.gateInspectorEl = document.getElementById('gating-inspector');
+    this.gateInspectorOn = false;
+    if (this.gateToggleEl) {
+      this.gateToggleEl.addEventListener('click', () => {
+        this.gateInspectorOn = !this.gateInspectorOn;
+        if (this.gateInspectorEl) this.gateInspectorEl.style.display = this.gateInspectorOn ? 'block' : 'none';
+        this.log('ui.debug.gateInspector.toggle', { enabled: this.gateInspectorOn });
+      });
+    }
   }
 
   log(event, payload = {}) {
@@ -49,5 +60,31 @@ export class Debug {
         this.logEl.scrollTop = this.logEl.scrollHeight;
       }
     }
+  }
+
+  updateGateInspector(info) {
+    if (!this.gateInspectorOn || !this.gateInspectorEl) return;
+    const rows = [
+      ['state', info.state],
+      ['handStatus', info.handStatus],
+      ['variant', info.variant],
+      ['activeSeated', `${info.activeSeated}/${info.totalSeated}`],
+      ['derivedDealerSeat', info.derivedDealerSeat],
+      ['mySeat', info.mySeat],
+      ['isDealer', info.isDealer],
+      ['uiLock', info.uiLock],
+      ['firstReason', info.firstReason],
+      ['reasons', (info.reasons || []).join(',')]
+    ];
+    const table = document.createElement('table');
+    rows.forEach(([k, v]) => {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td'); td1.textContent = k; tr.appendChild(td1);
+      const td2 = document.createElement('td'); td2.textContent = String(v); tr.appendChild(td2);
+      table.appendChild(tr);
+    });
+    this.gateInspectorEl.innerHTML = '';
+    this.gateInspectorEl.appendChild(table);
+    this.log('gate.inspect', info);
   }
 }
