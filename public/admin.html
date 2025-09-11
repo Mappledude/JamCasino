@@ -9,6 +9,7 @@
 <div id="app">
   <header>
     <div>Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span></div>
+    <button id="open-join">Join or Create</button>
     <button id="deal" disabled>Deal</button>
     <select id="variant" disabled>
       <option>Hold'em</option>
@@ -119,6 +120,22 @@
       </div>
       <div id="debug-log"></div>
     </aside>
+  </div>
+</div>
+<div id="join-overlay" class="hidden">
+  <div class="join-modal">
+    <h2>Join or Create Room</h2>
+    <label>Display Name
+      <input id="displayName" type="text" maxlength="20" />
+    </label>
+    <label>Room Code
+      <input id="roomCode" type="text" maxlength="8" />
+    </label>
+    <div id="join-error" class="error"></div>
+    <div class="buttons">
+      <button id="create-room">Create Room</button>
+      <button id="join-room">Join Room</button>
+    </div>
   </div>
 </div>
 <script type="module" src="./app.js"></script>
