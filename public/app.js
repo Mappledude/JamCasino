@@ -10,7 +10,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 import {
   getFirestore, doc, runTransaction, onSnapshot,
-  serverTimestamp, updateDoc, writeBatch, getDoc
+  serverTimestamp, updateDoc, writeBatch, getDoc,
+  collection, addDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
 const PRESENCE = {
@@ -122,6 +123,13 @@ lockInfoEl.id = 'lock-info';
 lockInfoEl.className = 'lock-info';
 headerEl?.appendChild(lockInfoEl);
 
+const actionBar = document.querySelector('#my-board .action-bar');
+const foldBtn = actionBar?.children[0] || null;
+const checkBtn = actionBar?.children[1] || null;
+const betBtn = actionBar?.children[2] || null;
+if (foldBtn) foldBtn.title = 'Coming soon';
+if (betBtn) betBtn.title = 'Coming soon';
+
 const uiDealLock = { active: false, timer: null, TTL_MS: 3000 };
 function setUiDealLock(on) {
   if (on) {
@@ -228,6 +236,52 @@ function computeBoardNext(room, hand) {
   if (already === 4) return { nextStatus: 'river', toAppend: [river], revealCount: 1 };
 
   return { nextStatus: null, toAppend: [], revealCount: 0 };
+}
+
+function computeOrder(room, street) {
+  const { seats = [], hand = {} } = room || {};
+  const participants = hand.participants || [];
+  const occupied = (idx) => {
+    const pid = seats[idx];
+    return pid && participants.includes(pid);
+  };
+  const nextOccupied = (start) => {
+    for (let k = 1; k <= 9; k++) {
+      const s = (start + k) % 9;
+      if (occupied(s)) return s;
+    }
+    return null;
+  };
+
+  const dealerSeat = hand.dealerSeat;
+  if (dealerSeat == null) return [];
+
+  const sbSeat = nextOccupied(dealerSeat);
+  const bbSeat = nextOccupied(sbSeat ?? dealerSeat);
+
+  const n = participants.length;
+  let startSeat;
+  if (street === 'preflop') {
+    if (n === 2) {
+      startSeat = dealerSeat;
+    } else {
+      startSeat = nextOccupied(bbSeat ?? dealerSeat);
+    }
+  } else {
+    startSeat = nextOccupied(dealerSeat);
+  }
+
+  if (startSeat == null) return [];
+
+  const order = [];
+  let s = startSeat;
+  for (let i = 0; i < 9; i++) {
+    const pid = seats[s];
+    if (pid && participants.includes(pid)) order.push(pid);
+    s = (s + 1) % 9;
+    if (s === startSeat && order.length) break;
+  }
+  return order;
 }
 
 async function tryTxDealLock(db, roomRef, uid) {
@@ -374,6 +428,10 @@ function renderGatedControls() {
     else if (handStatus === 'flop') label = 'Reveal Turn';
     else if (handStatus === 'turn') label = 'Reveal River';
     else if (handStatus === 'river') label = 'Showdown';
+    const t = currentRoom?.hand?.turn;
+    if (t && handStatus === t.street && t.roundComplete !== true) {
+      label += ' (after actions)';
+    }
     nextStreetBtn.textContent = label;
   }
 
@@ -384,6 +442,31 @@ function renderGatedControls() {
     variant: variant,
     uiLock: uiDealLock.active,
     handStatus
+  });
+}
+
+function renderActionControls(room) {
+  const uid = auth.currentUser?.uid;
+  const turn = room?.hand?.turn;
+  const streetMatch = room?.state === 'hand' && turn && room.hand?.status === turn.street;
+  const order = turn?.order || [];
+  const currentPid = streetMatch ? order[turn.index] || null : null;
+  const myTurn = streetMatch && currentPid === uid && turn.roundComplete !== true;
+  if (foldBtn) foldBtn.disabled = true;
+  if (betBtn) betBtn.disabled = true;
+  if (checkBtn) {
+    checkBtn.disabled = !myTurn;
+    checkBtn.textContent = 'Check';
+    checkBtn.title = myTurn ? '' : 'Not your turn';
+  }
+  const myBoard = document.getElementById('my-board');
+  if (myBoard) myBoard.classList.toggle('my-turn', myTurn);
+  window.DEBUG?.log('ui.actions.gate.evaluate', {
+    myTurn,
+    currentPid,
+    street: turn?.street || null,
+    index: turn?.index ?? null,
+    orderLen: order.length
   });
 }
 
@@ -452,13 +535,22 @@ if (nextStreetBtn) {
         }
 
         const newBoard = [ ...(hand.board || []), ...toAppend ];
+        const newOrder = computeOrder(room, nextStatus);
+        const newTurn = {
+          street: nextStatus,
+          order: newOrder,
+          index: 0,
+          roundComplete: false,
+          version: (hand.turn?.version || 0) + 1
+        };
         tx.update(currentRoomRef, {
           hand: {
             ...hand,
             status: nextStatus,
             street: nextStatus,
             board: newBoard,
-            lastRevealAt: serverTimestamp()
+            lastRevealAt: serverTimestamp(),
+            turn: newTurn
           }
         });
 
@@ -473,6 +565,62 @@ if (nextStreetBtn) {
     } catch (e) {
       window.DEBUG?.log('street.advance.tx.error', { code: e.code || 'UNKNOWN', detail: e });
     }
+  });
+}
+
+if (checkBtn) {
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    const room = currentRoom;
+    const turn = room?.hand?.turn;
+    const uid = auth.currentUser?.uid;
+    const street = turn?.street;
+    const handId = room?.hand?.id;
+    const currentPid = turn?.order?.[turn.index] || null;
+    if (room?.state !== 'hand' || room.hand?.status !== street || currentPid !== uid) return;
+    try {
+      const actionsRef = collection(db, 'rooms', roomCode, 'hands', handId, 'actions');
+      await addDoc(actionsRef, { pid: uid, street, type: 'check', ts: serverTimestamp() });
+      window.DEBUG?.log('action.intent.check', { street, pid: uid });
+    } catch (e) {
+      window.DEBUG?.log('action.intent.check.error', { code: e.code || 'UNKNOWN' });
+      return;
+    }
+    try {
+      const res = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(currentRoomRef);
+        if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+        const data = snap.data();
+        if (data.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+        const h = data.hand || {};
+        const t = h.turn || {};
+        const cp = t.order?.[t.index] || null;
+        const orderLen = (t.order || []).length;
+        if (h.status !== street || cp !== uid) {
+          throw { code: 'TURN_MISMATCH' };
+        }
+        let newIndex = t.index + 1;
+        let roundComplete = false;
+        if (newIndex >= orderLen) {
+          roundComplete = true;
+          newIndex = 0;
+        }
+        tx.update(currentRoomRef, {
+          'hand.turn.index': newIndex,
+          'hand.turn.roundComplete': roundComplete
+        });
+        return { index: newIndex, orderLen, roundComplete };
+      });
+      window.DEBUG?.log('turn.advance.index', { street, index: res.index, orderLen: res.orderLen });
+      if (res.roundComplete) window.DEBUG?.log('turn.round.complete', { street });
+    } catch (e) {
+      if (e.code === 'TURN_MISMATCH') {
+        window.DEBUG?.log('action.intent.idempotent', { street });
+      } else {
+        window.DEBUG?.log('turn.advance.error', { code: e.code || 'UNKNOWN' });
+      }
+    }
+    renderActionControls(currentRoom);
   });
 }
 
@@ -732,10 +880,46 @@ async function submitJoin(mode) {
   }
 }
 
+async function maybeInitTurn(room) {
+  const uid = auth.currentUser?.uid;
+  const hand = room?.hand || {};
+  if (room?.state !== 'hand') return;
+  if (!hand.status) return;
+  const mySeat = room.players?.[uid]?.seat ?? null;
+  const dealerSeat = hand.dealerSeat;
+  if (mySeat == null || dealerSeat == null || mySeat !== dealerSeat) return;
+  if (hand.turn && hand.turn.street === hand.status) return;
+  const order = computeOrder(room, hand.status);
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(currentRoomRef);
+      if (!snap.exists()) return;
+      const data = snap.data();
+      if (data.state !== 'hand') return;
+      const h = data.hand || {};
+      const seat = data.players?.[uid]?.seat ?? null;
+      if (seat !== h.dealerSeat) return;
+      if (h.turn && h.turn.street === h.status) return;
+      const turn = {
+        street: h.status,
+        order,
+        index: 0,
+        roundComplete: false,
+        version: (h.turn?.version || 0) + 1
+      };
+      tx.update(currentRoomRef, { 'hand.turn': turn });
+    });
+    window.DEBUG?.log('turn.init', { street: hand.status, orderLen: order.length });
+  } catch (e) {
+    // ignore
+  }
+}
+
 function renderRoom(data) {
   currentRoom = data;
   activeSeated = countActiveSeated(data, Date.now(), PRESENCE.STALE_AFTER_MS);
   ensureMyHandListener(data);
+  maybeInitTurn(data);
   let source = 'none';
   if (data.state === 'idle') {
     if (typeof data.dealerSeat === 'number') {
@@ -772,6 +956,12 @@ function renderRoom(data) {
     return (mySeat + uiIndex) % 9;
   };
 
+  const turn = data.hand?.turn;
+  const turnStreetMatch = data.state === 'hand' && turn && data.hand?.status === turn.street;
+  const currentPid = turnStreetMatch ? (turn.order || [])[turn.index] || null : null;
+  const orderLen = turnStreetMatch ? (turn.order || []).length : 0;
+  const turnIndex = turnStreetMatch ? turn.index : -1;
+
   if (mySeat == null) {
     debug.log('ui.seats.rotate.skip', { reason: 'notSeated' });
   } else {
@@ -805,6 +995,7 @@ function renderRoom(data) {
       stackEl.textContent = '$—';
       seatEl.classList.remove('me');
     }
+    seatEl.classList.toggle('turn', pid && pid === currentPid);
 
     let dealerEl = badgesEl.querySelector('.dealer-btn');
     if ((data.state === 'idle' || data.state === 'dealLocked') && derivedDealerSeat != null && sIdx === derivedDealerSeat) {
@@ -848,6 +1039,10 @@ function renderRoom(data) {
     }
   }
 
+  if (turnStreetMatch) {
+    window.DEBUG?.log('turn.render.current', { street: turn.street, currentPid, index: turnIndex, orderLen });
+  }
+
   const board = data.hand?.board || [];
   const boardEl = document.getElementById('board');
   if (boardEl) {
@@ -871,6 +1066,7 @@ function renderRoom(data) {
   }
 
   renderGatedControls();
+  renderActionControls(data);
   maybeRunDeal(data);
 }
 
