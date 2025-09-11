@@ -1,6 +1,5 @@
 :root{
-  --felt:#b30e2a;
-  --felt-dark:#8e0b22;
+  --felt:#0c6a2a; --felt-dark:#06511f; /* GREEN TABLE */
   --gold:#ffd75e;
   --ink:#0f1115; --ink-2:#171a21; --ink-3:#222633;
   --muted:#9aa0a6; --ok:#25d366; --warn:#f5a623; --danger:#ff4d4f;
@@ -11,9 +10,9 @@ header .left{ display:flex; align-items:center; gap:8px; }
 .build-tag{ margin-left:8px; color:var(--muted); font-size:12px; }
 .layout{ display:flex; }
 .table-wrap{ flex:1; display:flex; align-items:center; justify-content:center; padding:16px; }
-.poker-table.red{
+.poker-table{
   position:relative; width:1000px; height:640px; background: radial-gradient(ellipse at center, var(--felt) 0%, var(--felt-dark) 80%);
-  border-radius:36px; box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 10px #3b0d12, inset 0 0 0 14px #26080a;
+  border-radius:36px; box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 10px #093d18, inset 0 0 0 14px #04240e;
 }
 /* Seats */
 .seat{ position:absolute; width:140px; height:90px; }

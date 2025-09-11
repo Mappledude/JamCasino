@@ -4,13 +4,8 @@
   <meta charset="UTF-8" />
   <title>JamCasino — Poker Table</title>
   <link rel="stylesheet" href="./styles.css" />
-  <link rel="stylesheet" href="/red-override.css?v=UI-RED-v1">
-  <style id="__ui_red_v1">body{background:#b30e2a!important}</style>
 </head>
 <body>
-  <div style="position:fixed;top:8px;right:8px;z-index:999999;background:#111a;color:#fff;padding:6px 10px;border:1px solid #ffffff33;border-radius:8px;font:600 12px system-ui">
-  Build: UI-RED-v1
-</div>
 <div id="app">
   <header>
     <div class="left">Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span> <span id="build-tag" class="build-tag"></span> <button id="open-join">Join or Create</button></div>
@@ -27,7 +22,7 @@
   </header>
   <main class="layout">
     <section class="table-wrap">
-      <div class="poker-table red">
+      <div class="poker-table">
         <div id="pot-pill" class="pot-pill">Pot: 0</div>
         <div id="result-banner" class="result-banner hidden"></div>
         <div class="seat seat-0"><div class="seat-inner"><div class="badges"></div><div class="name">Seat 1</div><div class="stack">$—</div><div class="status"><span class="status-dot"></span></div></div></div>
@@ -103,6 +98,5 @@
   </div>
 </div>
 <script type="module" src="./app.js"></script>
-  <script src="/red-tag.js?v=UI-RED-v1"></script>
 </body>
 </html>
