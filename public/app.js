@@ -1,4 +1,4 @@
-import { verifyCardAssets, resolveCardSrc } from './cards.js';
+import { verifyCardAssets, resolveCardSrc, resolveCardSrcByIndex, CARD_BACK_SRC } from './cards.js';
 import { Debug } from './debug.js';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import {
@@ -10,7 +10,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 import {
   getFirestore, doc, runTransaction, onSnapshot,
-  serverTimestamp, updateDoc
+  serverTimestamp, updateDoc, writeBatch, getDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
 const PRESENCE = {
@@ -34,6 +34,10 @@ let currentRoom = null;
 let derivedDealerSeat = null;
 let activeSeated = 0;
 let lastGateReason = null;
+let dealFlowRunning = false;
+let myHandUnsub = null;
+let myHandId = null;
+let myHandCards = null;
 
 document.getElementById('debug-room').textContent = roomCode ?? '—';
 
@@ -155,6 +159,35 @@ function isLockExpired(hand, nowMs) {
   const atMs = hand?.lockedAt?.toMillis?.() ?? 0;
   const ttl = hand?.lockTTLms ?? DEAL_LOCK.TTL_MS;
   return nowMs - atMs > ttl;
+}
+
+function seedFromStrings(a, b) {
+  let h = 2166136261 >>> 0;
+  const s = `${a}#${b}`;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed) {
+  return function() {
+    let t = (seed += 0x6D2B79F5) >>> 0;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffledDeck(seed) {
+  const deck = Array.from({ length: 52 }, (_, i) => i + 1);
+  const rand = mulberry32(seed);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
 }
 
 async function tryTxDealLock(db, roomRef, uid) {
@@ -586,6 +619,7 @@ async function submitJoin(mode) {
 function renderRoom(data) {
   currentRoom = data;
   activeSeated = countActiveSeated(data, Date.now(), PRESENCE.STALE_AFTER_MS);
+  ensureMyHandListener(data);
   let source = 'none';
   if (data.state === 'idle') {
     if (typeof data.dealerSeat === 'number') {
@@ -665,7 +699,202 @@ function renderRoom(data) {
     } else {
       if (dealerEl) dealerEl.remove();
     }
+
+    const existingHole = seatEl.querySelector('.hole-cards');
+    if (data.state === 'hand' && data.hand?.status === 'preflop' && pid && (data.hand.participants || []).includes(pid)) {
+      let holeEl = existingHole;
+      if (!holeEl) {
+        holeEl = document.createElement('div');
+        holeEl.className = 'hole-cards';
+        holeEl.style.display = 'flex';
+        holeEl.style.gap = '4px';
+        seatEl.appendChild(holeEl);
+      }
+      const holeCount = data.hand.holeCount || 2;
+      for (let i = 0; i < holeCount; i++) {
+        let slot = holeEl.children[i];
+        if (!slot) {
+          slot = document.createElement('div');
+          slot.className = 'card-slot';
+          holeEl.appendChild(slot);
+        }
+        const cardIndex = (pid === uid && myHandCards && myHandCards[i]) ? myHandCards[i] : null;
+        const src = cardIndex ? resolveCardSrcByIndex(cardIndex) : CARD_BACK_SRC;
+        slot.style.backgroundImage = `url(${src})`;
+        slot.classList.remove('empty');
+      }
+      while (holeEl.children.length > holeCount) holeEl.removeChild(holeEl.lastChild);
+    } else {
+      if (existingHole) existingHole.remove();
+    }
+  }
+
+  if (data.state === 'hand' && data.hand?.status === 'preflop') {
+    window.DEBUG?.log('ui.hole.render.others', { holeCount: data.hand.holeCount || 0 });
   }
 
   renderGatedControls();
+  maybeRunDeal(data);
+}
+
+function renderMyHoleCards(cards = [], holeCount = 0) {
+  const container = document.querySelector('#my-board .hole-cards');
+  if (!container) return;
+  for (let i = 0; i < 4; i++) {
+    let slot = container.children[i];
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'card-slot';
+      container.appendChild(slot);
+    }
+    if (cards[i]) {
+      slot.style.backgroundImage = `url(${resolveCardSrcByIndex(cards[i])})`;
+      slot.classList.remove('empty');
+    } else if (i < holeCount) {
+      slot.style.backgroundImage = `url(${CARD_BACK_SRC})`;
+      slot.classList.remove('empty');
+    } else {
+      slot.style.backgroundImage = '';
+      slot.classList.add('empty');
+    }
+  }
+}
+
+function ensureMyHandListener(room) {
+  const uid = auth.currentUser?.uid;
+  const handId = room?.hand?.id;
+  if (!uid || !roomCode || !handId) {
+    if (myHandUnsub) myHandUnsub();
+    myHandUnsub = null;
+    myHandId = null;
+    myHandCards = null;
+    renderMyHoleCards([]);
+    return;
+  }
+  if (myHandId === handId) return;
+  if (myHandUnsub) myHandUnsub();
+  myHandId = handId;
+  const handRef = doc(db, 'rooms', roomCode, 'players', uid, 'hands', handId);
+  myHandUnsub = onSnapshot(handRef, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data();
+      myHandCards = data.cards || [];
+      renderMyHoleCards(myHandCards, room.hand?.holeCount || 0);
+      window.DEBUG?.log('hand.private.listen.ready', { handId });
+      window.DEBUG?.log('ui.hole.render.mine', { cards: myHandCards });
+      renderRoom(currentRoom);
+    }
+  });
+}
+
+async function maybeRunDeal(room) {
+  const uid = auth.currentUser?.uid;
+  if (!room || room.state !== 'dealLocked') return;
+  if (!room.hand || (room.hand.status !== 'locked' && room.hand.status !== 'dealing')) return;
+  if (room.hand.lockedBy !== uid) return;
+  if (dealFlowRunning) return;
+  dealFlowRunning = true;
+  try {
+    await runDealFlow(room);
+  } finally {
+    dealFlowRunning = false;
+  }
+}
+
+async function runDealFlow(room) {
+  const uid = auth.currentUser.uid;
+  const roomRef = currentRoomRef;
+  try {
+    if (room.hand.status === 'locked') {
+      await runTransaction(db, async (tx) => {
+        const r = await tx.get(roomRef);
+        const rm = r.data();
+        if (rm.state !== 'dealLocked' || rm.hand?.status !== 'locked' || rm.hand.lockedBy !== uid) {
+          throw { code: 'NOT_LOCK_OWNER' };
+        }
+        const now = serverTimestamp();
+        const holeCount = rm.variant === 'OMA' ? 4 : 2;
+        const seatedPids = (rm.seats || []).filter(Boolean);
+        const participants = seatedPids;
+        tx.update(roomRef, {
+          'hand.status': 'dealing',
+          'hand.holeCount': holeCount,
+          'hand.participants': participants,
+          'hand.lockedAt': now,
+          'hand.lockTTLms': Math.max(15000, DEAL_LOCK.TTL_MS)
+        });
+      });
+    }
+
+    const snap = await getDoc(roomRef);
+    room = snap.data();
+    const hand = room.hand;
+    const participants = hand.participants || [];
+    window.DEBUG?.log('hand.deal.begin', { handId: hand.id, participants: participants.length });
+
+    const deck = shuffledDeck(seedFromStrings(roomCode, hand.id));
+    const order = [];
+    const seats = room.seats || [];
+    const seen = new Set();
+    for (let i = 1; i <= 9; i++) {
+      const idx = (hand.dealerSeat + i) % 9;
+      const pid = seats[idx];
+      if (pid && participants.includes(pid) && !seen.has(pid)) {
+        order.push({ pid, seat: idx });
+        seen.add(pid);
+      }
+    }
+
+    const cardsByPid = {};
+    let ptr = 0;
+    for (let r = 0; r < hand.holeCount; r++) {
+      for (const { pid } of order) {
+        if (!cardsByPid[pid]) cardsByPid[pid] = [];
+        cardsByPid[pid].push(deck[ptr++]);
+      }
+    }
+
+    let writes = 0;
+    const batch = writeBatch(db);
+    for (const { pid, seat } of order) {
+      const hRef = doc(db, 'rooms', roomCode, 'players', pid, 'hands', hand.id);
+      const hSnap = await getDoc(hRef);
+      if (!hSnap.exists()) {
+        batch.set(hRef, {
+          handId: hand.id,
+          variant: hand.variant,
+          cards: cardsByPid[pid],
+          createdAt: serverTimestamp()
+        });
+        writes++;
+        window.DEBUG?.log('hand.deal.private.write', { pid, seat, count: hand.holeCount });
+      }
+    }
+    if (writes > 0) {
+      await batch.commit();
+    } else {
+      window.DEBUG?.log('hand.deal.idempotent', { handId: hand.id });
+    }
+
+    await runTransaction(db, async (tx) => {
+      const r = await tx.get(roomRef);
+      const rm = r.data();
+      if (rm.state !== 'dealLocked' || rm.hand?.status !== 'dealing' || rm.hand.lockedBy !== uid) {
+        throw { code: 'OPEN_NOT_ALLOWED' };
+      }
+      tx.update(roomRef, {
+        state: 'hand',
+        hand: {
+          ...rm.hand,
+          status: 'preflop',
+          street: 'preflop',
+          dealtAt: serverTimestamp(),
+          board: []
+        }
+      });
+    });
+    window.DEBUG?.log('hand.deal.commit.success', { handId: hand.id });
+  } catch (e) {
+    window.DEBUG?.log('hand.deal.error', { code: e.code || 'UNKNOWN' });
+  }
 }

@@ -15,6 +15,11 @@ export function resolveCardSrc(rank, suit) {
   return src;
 }
 
+export function resolveCardSrcByIndex(index) {
+  if (index < 1 || index > 52) throw new Error('bad card index');
+  return `/Images/Card_Deck-${String(index).padStart(2, '0')}.png`;
+}
+
 export function verifyCardAssets() {
   const expected = ["Images/Card_Deck-Back.png"];
   for (let i = 1; i <= 52; i++) {
