@@ -115,6 +115,41 @@ async function ensureWallet(uid){
   }
 }
 
+// Returns a Promise<string> of the assigned display name, e.g. "Player3".
+async function ensureRoomDisplayName(db, roomRef, uid) {
+  const rx = /^Player(\d+)$/;
+  let assigned = null;
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(roomRef);
+    if (!snap.exists()) throw new Error('Room missing');
+    const room = snap.data() || {};
+    const players = room.players || {};
+
+    const mine = players[uid] || {};
+    if (mine.displayName && rx.test(mine.displayName)) {
+      assigned = mine.displayName;
+      return;
+    }
+
+    const used = new Set();
+    Object.values(players).forEach(p => {
+      if (p && typeof p.displayName === 'string') {
+        const m = p.displayName.match(rx);
+        if (m) used.add(parseInt(m[1], 10));
+      }
+    });
+
+    let n = 1;
+    while (used.has(n)) n++;
+    assigned = `Player${n}`;
+    const path = `players.${uid}.displayName`;
+    tx.update(roomRef, { [path]: assigned });
+  });
+
+  window.DEBUG?.log('name.assign.success', { displayName: assigned });
+  return assigned;
+}
+
 await setPersistence(auth, browserSessionPersistence);
 await signInAnonymously(auth);
 
@@ -193,6 +228,11 @@ const betInput = document.getElementById('bet-amount');
 const raiseBtn = document.getElementById('btn-raise');
 const turnHint = document.getElementById('turn-hint');
 const myConsole = document.getElementById('my-console');
+
+function renderMyConsole(name) {
+  const el = document.getElementById('my-name');
+  if (el) el.textContent = name;
+}
 
 const potEl = document.getElementById('pot-pill');
 
@@ -1284,32 +1324,39 @@ let roomUnsub = null;
 async function joinRoomByCode(code){
   const uid = auth.currentUser?.uid;
   if(!uid) return;
-  const displayName = 'Player';
+  const roomRef = doc(db,'rooms',code);
   const seat = await runTransaction(db, async (tx) => {
-    const roomRef = doc(db,'rooms',code);
     const snap = await tx.get(roomRef);
     if(!snap.exists()) throw { code:'ROOM_MISSING' };
-    const data = snap.data();
-    data.players = data.players || {};
-    const player = data.players[uid] || { displayName, seat:null, joinedAt: serverTimestamp() };
-    player.displayName = displayName;
-    player.active = true;
-    player.lastSeen = serverTimestamp();
-    data.players[uid] = player;
-    tx.set(roomRef,{ players: data.players }, { merge:true });
-    return player.seat;
+    const data = snap.data() || {};
+    const pathBase = `players.${uid}`;
+    const player = data.players?.[uid] || {};
+    if (!data.players || !data.players[uid]) {
+      tx.update(roomRef, {
+        [`${pathBase}.seat`]: null,
+        [`${pathBase}.lastSeen`]: serverTimestamp(),
+        [`${pathBase}.joinedAt`]: serverTimestamp(),
+        [`${pathBase}.active`]: true
+      });
+    } else {
+      tx.update(roomRef, {
+        [`${pathBase}.lastSeen`]: serverTimestamp(),
+        [`${pathBase}.active`]: true
+      });
+    }
+    return player.seat ?? null;
   });
 
   roomCode = code;
   window.APP = window.APP || {};
   window.APP.roomCode = code;
+  const myName = await ensureRoomDisplayName(db, roomRef, uid);
+  document.documentElement.setAttribute('data-me-name', myName);
+  sessionStorage.setItem('playerName', myName);
+  renderMyConsole(myName);
   debug.log('nav.table.enter', { roomCode: code });
   document.getElementById('room-code').textContent = code;
-  currentRoomRef = doc(db,'rooms',code);
-  await updateDoc(currentRoomRef, {
-    [`players.${uid}.lastSeen`]: serverTimestamp(),
-    [`players.${uid}.active`]: true
-  });
+  currentRoomRef = roomRef;
   startHeartbeat(currentRoomRef, uid);
   startEvictionSweeper(currentRoomRef, uid);
   clearInterval(dealLockSweeperTimer);
@@ -1322,7 +1369,7 @@ async function joinRoomByCode(code){
     const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
     debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
   });
-  debug.log('room.join.success', { code, seat });
+  debug.log('room.join.success', { code, seat, displayName: myName });
 }
 
 async function submitJoin(mode) {

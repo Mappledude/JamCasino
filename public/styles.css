@@ -20,7 +20,7 @@ header .left{ display:flex; align-items:center; gap:8px; }
 .seat .seat-inner{ background:rgba(0,0,0,.25); border-radius:12px; padding:8px; text-align:center; }
 .seat .badges{ height:18px; }
 .seat .badges span{ margin-right:4px; padding:2px 4px; border-radius:4px; background:#1b2130; border:1px solid rgba(255,255,255,.2); font-size:10px; }
-.seat .name{ font-weight:600; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.seat .name{ font-weight:600; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:120px; }
 .seat .stack{ font-size:12px; color:#cfd5dd; }
 .seat.me{ outline:2px solid var(--gold); box-shadow:0 0 12px rgba(255,215,0,.6); }
 .seat.turn{ box-shadow:0 0 0 2px #fff, 0 0 20px rgba(255,255,255,.5); }
