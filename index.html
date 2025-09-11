@@ -61,25 +61,59 @@
     .dealbar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #0e1330; border: 1px dashed #2c376e; border-radius: 12px; }
 
     /* ---- Table / seats ---- */
-    #tableBox {
+    #felt {
       position: relative;
-      width: 420px; height: 420px; margin: 0 auto; border-radius: 50%;
-      background: #0a1430; border: 2px solid #1a2247;
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: radial-gradient(circle at center, #0e6a3b, #0a5130);
+      border-radius: 20px;
+      overflow: hidden;
+    }
+    #tableBox {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 70%; height: 60%;
+      background: #166c42;
+      border-radius: 50% / 55%;
+      box-shadow: inset 0 0 40px rgba(0,0,0,.6);
+    }
+    #community-board {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      display: flex; gap: 8px;
     }
     .seat {
-      position: absolute; width: 80px; height: 80px; text-align: center;
+      position: absolute; width: 100px; text-align: center;
       transform: translate(-50%, -50%);
     }
     .seat .cards { display: flex; justify-content: center; gap: 4px; margin-top: 4px; }
     .seat .card {
-      width: 32px; height: 48px; border-radius: 4px; background: #fff;
+      width: 40px; height: 60px; border-radius: 4px; background: #fff;
       display: flex; align-items: center; justify-content: center; color: #000;
-      font-size: 14px; font-weight: 600;
+      font-size: 18px; font-weight: 600;
     }
-    .seat .card.empty { background: #1a2247; border:1px dashed #2a356e; color:transparent; }
+    .seat .card.empty { background: transparent; border:1px dashed #1a2247; color:transparent; }
     .seat .card.back { background:#fff; }
-    .seat.me { border: 2px solid var(--accent); border-radius: 8px; padding: 2px; }
+    .seat.me { width: 180px; }
+    .seat.me .card { width: 60px; height: 90px; }
+    .action-bar { margin-top: 8px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--muted); color: #000;
+      display:flex; align-items:center; justify-content:center;
+      margin: 0 auto 4px;
+      font-weight:600;
+    }
     .badge { font-size: 10px; padding: 2px 4px; border-radius: 4px; background: var(--card); border:1px solid #1a2247; }
+    .folded { opacity: .4; }
+    @media (max-width: 1280px) {
+      .seat { width: 80px; }
+      .seat .card { width: 32px; height: 48px; font-size: 14px; }
+      .seat.me { width: 150px; }
+      .seat.me .card { width: 48px; height: 72px; }
+    }
   </style>
 </head>
 <body>
@@ -127,7 +161,7 @@
       </div>
 
       <div style="height:12px"></div>
-      <div id="tableBox" hidden></div>
+      <div id="felt" hidden><div id="tableBox"></div></div>
       <div id="playersBox"></div>
     </section>
 
@@ -301,7 +335,7 @@
         $phase.textContent = r.phase || "idle";
         $street.textContent = r.street || "idle";
         $pot.textContent = String(r.potC || 0);
-        renderSeats(lastPlayers, r);
+        renderTable(lastPlayers, me?.uid);
         log("room.snapshot", { phase: r.phase || "idle", street: r.street || "idle", potC: r.potC || 0 });
         decideDealVisibility(r);
       });
@@ -317,7 +351,7 @@
         const active = players.filter(p => !p.leftAt && !p.eliminated).length;
         $activeCountLbl.textContent = String(active);
         renderPlayers(players);
-        renderSeats(players, lastRoomState);
+        renderTable(players, me?.uid);
         log("players.snapshot", { n: players.length, activeCount: active, players: players.map(p => ({ id:p.id, name:p.name, stack:p.stack, leftAt: !!p.leftAt, eliminated: !!p.eliminated })) });
       });
     }
@@ -345,57 +379,111 @@
     }
 
     // ---- Table rendering ----
-    function renderSeats(players, room) {
-      const $table = document.getElementById('tableBox');
-      if (!players || !players.length) { $table.hidden = true; return; }
-      $table.hidden = false;
+    
+function renderTable(players, meId) {
+  const room = lastRoomState || {};
+  const $felt = document.getElementById('felt');
+  const $table = document.getElementById('tableBox');
+  if (!players || !players.length) { $felt.hidden = true; return; }
+  $felt.hidden = false;
 
-      const n = Math.min(players.length, 9);
-      const board = room?.board || { flop:[], turn:[], river:[] };
-      const show = room?.showBoard || { flop:false, turn:false, river:false };
+  const ordered = [];
+  let mePlayer = null;
+  players.forEach(p => { if (p.id === meId) mePlayer = p; else ordered.push(p); });
+  if (mePlayer) ordered.unshift(mePlayer);
+  const n = Math.min(ordered.length, 9);
 
-      const seatsHtml = [];
-      for (let i=0;i<n;i++) {
-        const p = players[i];
-        const ang = (Math.PI * 2 * i / n);
-        const left = 50 + Math.sin(ang) * 40;
-        const top = 50 - Math.cos(ang) * 40;
-        const hole = (p.hole || []);
-        let cardsHtml = '<div class="card empty"></div><div class="card empty"></div>';
-        if (hole.length === 2) {
-          cardsHtml = (p.id === me?.uid)
-            ? hole.map(c=>`<div class="card">${cardText(c)}</div>`).join('')
-            : '<div class="card back">🂠</div><div class="card back">🂠</div>';
-        }
-        const badges = [];
-        if (room?.dealerId === p.id) badges.push('D');
-        if (room?.bet?.committed && room.bet.committed[p.id]) {
-          const amt = room.bet.committed[p.id];
-          if (amt === (room?.blinds?.sbC || 25)) badges.push('SB');
-          if (amt === (room?.blinds?.bbC || 50)) badges.push('BB');
-        }
-        seatsHtml.push(`<div class="seat ${p.id===me?.uid? 'me':''}" style="left:${left}%;top:${top}%">
-            <div>${p.name||'Player'}</div>
-            <div class="cards">${cardsHtml}</div>
-            <div>${badges.map(b=>`<span class="badge">${b}</span>`).join('')}</div>
-          </div>`);
-      }
+  const angleStep = 360 / n;
+  const seatsHtml = [];
+  const layout = [];
 
-      const boardCards = [];
-      if (show.flop) boardCards.push(...(board.flop || []));
-      if (show.turn) boardCards.push(...(board.turn || []));
-      if (show.river) boardCards.push(...(board.river || []));
-      const boardHtmlArr = [];
-      for (let i=0;i<5;i++) {
-        const c = boardCards[i];
-        boardHtmlArr.push(c ? `<div class="card">${cardText(c)}</div>` : '<div class="card empty"></div>');
-      }
-      const boardHtml = boardHtmlArr.join('');
-
-      $table.innerHTML = `<div class="seat" style="left:50%;top:50%;width:auto;height:auto"><div class="cards">${boardHtml}</div></div>` + seatsHtml.join('');
+  for (let i=0;i<n;i++) {
+    const p = ordered[i];
+    const angDeg = angleStep * i;
+    const ang = angDeg * Math.PI / 180;
+    const left = 50 + Math.sin(ang) * 40;
+    const top = 50 - Math.cos(ang) * 40;
+    const dim = (p.folded || p.eliminated) ? 'folded' : '';
+    let cardsHtml = '<div class="card empty"></div><div class="card empty"></div>';
+    const showCards = room.phase !== 'idle' && room.street !== 'idle';
+    const hole = showCards ? (p.hole || []) : [];
+    if (hole.length === 2) {
+      cardsHtml = (p.id === meId)
+        ? hole.map(c=>`<div class="card">${cardText(c)}</div>`).join('')
+        : '<div class="card back">🂠</div><div class="card back">🂠</div>';
     }
+    const badges = [];
+    if (room?.dealerId === p.id) badges.push('D');
+    if (room?.bet?.committed && room.bet.committed[p.id]) {
+      const amt = room.bet.committed[p.id];
+      if (amt === (room?.blinds?.sbC || 25)) badges.push('SB');
+      if (amt === (room?.blinds?.bbC || 50)) badges.push('BB');
+    }
+    if (p.id === meId) {
+      seatsHtml.push(`<div class="seat me ${dim}" style="left:${left}%;top:${top}%">`+
+        `<div class="avatar">${(p.name||'')[0]||'?'}</div>`+
+        `<div>${p.name||'Player'} — $${(p.stack||0).toFixed(2)}</div>`+
+        `<div class="cards">${cardsHtml}</div>`+
+        `<div class="action-bar"><button id="foldBtn">Fold</button><button id="checkBtn">Check/Call</button><button id="betBtn">Bet/Raise</button><input id="betAmt" type="number" style="display:none;width:80px"/><input id="betSlider" type="range" style="display:none;width:80px"/></div>`+
+      `</div>`);
+    } else {
+      seatsHtml.push(`<div class="seat ${dim}" style="left:${left}%;top:${top}%">`+
+        `<div class="avatar">${(p.name||'')[0]||'?'}</div>`+
+        `<div>${p.name||'Player'}</div>`+
+        `<div class="cards">${cardsHtml}</div>`+
+        `<div>${badges.map(b=>`<span class="badge">${b}</span>`).join('')}</div>`+
+      `</div>`);
+    }
+    layout.push({ name: p.name || 'Player', uid: p.id, seatAngle: angDeg });
+  }
 
-    // ---------- Deal button visibility rules (Step 0 scope) ----------
+  const board = room.board || { flop:[], turn:[], river:[] };
+  const show = room.showBoard || { flop:false, turn:false, river:false };
+  const boardHtmlArr = [];
+  const boardCards = [...(board.flop||[]), ...(board.turn||[]), ...(board.river||[])];
+  for (let i=0;i<5;i++) {
+    const c = boardCards[i];
+    if (!c || room.phase === 'idle' || room.street === 'idle') {
+      boardHtmlArr.push('<div class="card empty"></div>');
+    } else {
+      if (i<3 && !show.flop) boardHtmlArr.push('<div class="card back">🂠</div>');
+      else if (i===3 && !show.turn) boardHtmlArr.push('<div class="card back">🂠</div>');
+      else if (i===4 && !show.river) boardHtmlArr.push('<div class="card back">🂠</div>');
+      else boardHtmlArr.push(`<div class="card">${cardText(c)}</div>`);
+    }
+  }
+
+  $table.innerHTML = `<div id="community-board">${boardHtmlArr.join('')}</div>` + seatsHtml.join('');
+  setupActionBar(mePlayer, room);
+  log("ui.layout.ready", { seatCount: layout.length, meSeatIndex: mePlayer?0:-1, seats: layout });
+}
+
+function setupActionBar(mePlayer, room) {
+  const $fold = document.getElementById('foldBtn');
+  const $check = document.getElementById('checkBtn');
+  const $bet = document.getElementById('betBtn');
+  const $amt = document.getElementById('betAmt');
+  const $slider = document.getElementById('betSlider');
+  if (!$fold || !$check || !$bet) return;
+  const acting = room?.acting;
+  const enabled = acting === me?.uid;
+  [$fold,$check,$bet,$amt,$slider].forEach(el=>{ if(el) el.disabled = !enabled; });
+  $amt.style.display = $slider.style.display = 'none';
+  const bb = (room?.blinds?.bbC || 50)/100;
+  const max = mePlayer?.stack || 0;
+  $bet.onclick = () => {
+    log('ui.action.click',{action:'bet-raise'});
+    if(enabled){
+      $amt.min = bb; $amt.max = max; $amt.value = bb;
+      $slider.min = bb; $slider.max = max; $slider.value = bb;
+      $amt.style.display = $slider.style.display = 'block';
+    }
+  };
+  $fold.onclick = () => log('ui.action.click',{action:'fold'});
+  $check.onclick = () => { log('ui.action.click',{action:'check-call'}); $amt.style.display=$slider.style.display='none'; };
+  log('ui.actionbar.state',{enabled, acting});
+}
+// ---------- Deal button visibility rules (Step 0 scope) ----------
     async function decideDealVisibility(roomData) {
       const playersSnap = await getDocs(collection(db, "rooms", roomCode, "players"));
       const players = [];
