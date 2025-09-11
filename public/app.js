@@ -26,6 +26,8 @@ const DEAL_LOCK = {
   SWEEP_INTERVAL_MS: 3000
 };
 
+const DEFAULT_CONFIG = { sb: 25, bb: 50, startingStack: 10000 };
+
 let roomCode = null;
 let heartbeatTimer = null;
 let sweeperTimer = null;
@@ -126,9 +128,10 @@ headerEl?.appendChild(lockInfoEl);
 const actionBar = document.querySelector('#my-board .action-bar');
 const foldBtn = actionBar?.children[0] || null;
 const checkBtn = actionBar?.children[1] || null;
-const betBtn = actionBar?.children[2] || null;
-if (foldBtn) foldBtn.title = 'Coming soon';
-if (betBtn) betBtn.title = 'Coming soon';
+const betInput = actionBar?.children[2] || null;
+const betBtn = actionBar?.children[3] || null;
+
+const potEl = document.getElementById('pot');
 
 const uiDealLock = { active: false, timer: null, TTL_MS: 3000 };
 function setUiDealLock(on) {
@@ -359,6 +362,14 @@ async function sweepExpiredDealLock(db, roomRef) {
       window.DEBUG?.log('hand.lock.sweeper.release.success', {});
     }
   }
+
+  const betState = data.hand?.betting || {};
+  if (potEl) potEl.textContent = `Pot: ${betState.pot || 0}`;
+  window.DEBUG?.log('ui.betting.render', {
+    pot: betState.pot || 0,
+    currentBet: betState.currentBet || 0,
+    minRaiseTo: betState.minRaiseTo || 0
+  });
 }
 
 function renderGatedControls() {
@@ -414,6 +425,12 @@ function renderGatedControls() {
     else if (state !== 'hand') nsReason = 'noHand';
     else if (!isDealer) nsReason = 'notDealer';
     else if (!['preflop', 'flop', 'turn'].includes(handStatus)) nsReason = 'complete';
+    else {
+      const bet = currentRoom?.hand?.betting;
+      const allInClosed = bet ? Object.entries(bet.in || {}).filter(([p, v]) => v).every(([pid]) => bet.allIn?.[pid]) : false;
+      if (!(bet?.roundClosed || allInClosed)) nsReason = 'roundOpen';
+      else if (currentRoom?.hand?.turn?.street !== handStatus) nsReason = 'turnMismatch';
+    }
 
     nextStreetBtn.disabled = nsReason !== null;
     let nsTitle = '';
@@ -421,6 +438,8 @@ function renderGatedControls() {
     else if (nsReason === 'noHand') nsTitle = 'No hand in progress';
     else if (nsReason === 'complete') nsTitle = 'All streets revealed';
     else if (nsReason === 'uiLock') nsTitle = 'Please wait…';
+    else if (nsReason === 'roundOpen') nsTitle = 'Betting round open';
+    else if (nsReason === 'turnMismatch') nsTitle = 'Turn not ready';
     nextStreetBtn.title = nsTitle;
 
     let label = 'Next Street';
@@ -448,25 +467,41 @@ function renderGatedControls() {
 function renderActionControls(room) {
   const uid = auth.currentUser?.uid;
   const turn = room?.hand?.turn;
+  const betting = room?.hand?.betting || {};
   const streetMatch = room?.state === 'hand' && turn && room.hand?.status === turn.street;
   const order = turn?.order || [];
   const currentPid = streetMatch ? order[turn.index] || null : null;
   const myTurn = streetMatch && currentPid === uid && turn.roundComplete !== true;
-  if (foldBtn) foldBtn.disabled = true;
-  if (betBtn) betBtn.disabled = true;
+  const committed = betting.committed?.[uid] || 0;
+  const toCall = Math.max(0, (betting.currentBet || 0) - committed);
+  const myStack = betting.stacks?.[uid] || 0;
+  const canAct = betting.in?.[uid] && !betting.allIn?.[uid];
+  if (foldBtn) foldBtn.disabled = !(myTurn && canAct);
   if (checkBtn) {
-    checkBtn.disabled = !myTurn;
-    checkBtn.textContent = 'Check';
+    checkBtn.disabled = !(myTurn && canAct);
+    const label = toCall === 0 ? 'Check' : `Call ${Math.min(toCall, myStack)}`;
+    checkBtn.textContent = label;
     checkBtn.title = myTurn ? '' : 'Not your turn';
+  }
+  if (betBtn) {
+    betBtn.disabled = !(myTurn && canAct);
+    const label = (betting.currentBet || 0) === 0 ? 'Bet' : 'Raise';
+    betBtn.textContent = label;
+  }
+  if (betInput) {
+    betInput.disabled = !(myTurn && canAct);
+    const min = (betting.currentBet || 0) === 0 ? (room.config?.bb || DEFAULT_CONFIG.bb) : (betting.minRaiseTo || 0);
+    betInput.min = min;
+    betInput.max = committed + myStack;
   }
   const myBoard = document.getElementById('my-board');
   if (myBoard) myBoard.classList.toggle('my-turn', myTurn);
   window.DEBUG?.log('ui.actions.gate.evaluate', {
     myTurn,
-    currentPid,
-    street: turn?.street || null,
-    index: turn?.index ?? null,
-    orderLen: order.length
+    toCall,
+    myStack,
+    currentBet: betting.currentBet || 0,
+    minRaiseTo: betting.minRaiseTo || 0
   });
 }
 
@@ -541,8 +576,18 @@ if (nextStreetBtn) {
           order: newOrder,
           index: 0,
           roundComplete: false,
-          version: (hand.turn?.version || 0) + 1
+          version: (hand.turn?.version || 0) + 1,
+          untilPid: newOrder[0] || null
         };
+        if (hand.betting) {
+          hand.betting.street = nextStatus;
+          hand.betting.currentBet = 0;
+          hand.betting.lastRaiseSize = room.config?.bb ?? DEFAULT_CONFIG.bb;
+          hand.betting.minRaiseTo = room.config?.bb ?? DEFAULT_CONFIG.bb;
+          for (const pid in hand.betting.committed) hand.betting.committed[pid] = 0;
+          hand.betting.roundClosed = false;
+          window.DEBUG?.log('betting.street.reset', { street: nextStatus });
+        }
         tx.update(currentRoomRef, {
           hand: {
             ...hand,
@@ -568,57 +613,167 @@ if (nextStreetBtn) {
   });
 }
 
-if (checkBtn) {
-  checkBtn.addEventListener('click', async () => {
-    checkBtn.disabled = true;
-    const room = currentRoom;
-    const turn = room?.hand?.turn;
+function nextActiveIndex(order, startIdx, bet) {
+  const len = order.length;
+  for (let i = 1; i <= len; i++) {
+    const idx = (startIdx + i) % len;
+    const pid = order[idx];
+    if (bet.in?.[pid]) return idx;
+  }
+  return startIdx;
+}
+
+function everyoneMatchedOrAllIn(bet) {
+  const currentBet = bet.currentBet || 0;
+  for (const pid in bet.in) {
+    if (!bet.in[pid]) continue;
+    if (bet.allIn[pid]) continue;
+    if ((bet.committed?.[pid] || 0) !== currentBet) return false;
+  }
+  return true;
+}
+
+if (foldBtn) {
+  foldBtn.addEventListener('click', async () => {
     const uid = auth.currentUser?.uid;
-    const street = turn?.street;
-    const handId = room?.hand?.id;
-    const currentPid = turn?.order?.[turn.index] || null;
-    if (room?.state !== 'hand' || room.hand?.status !== street || currentPid !== uid) return;
     try {
-      const actionsRef = collection(db, 'rooms', roomCode, 'hands', handId, 'actions');
-      await addDoc(actionsRef, { pid: uid, street, type: 'check', ts: serverTimestamp() });
-      window.DEBUG?.log('action.intent.check', { street, pid: uid });
-    } catch (e) {
-      window.DEBUG?.log('action.intent.check.error', { code: e.code || 'UNKNOWN' });
-      return;
-    }
-    try {
-      const res = await runTransaction(db, async (tx) => {
+      const txRes = await runTransaction(db, async (tx) => {
         const snap = await tx.get(currentRoomRef);
         if (!snap.exists()) throw { code: 'ROOM_MISSING' };
-        const data = snap.data();
-        if (data.state !== 'hand') throw { code: 'NOT_IN_HAND' };
-        const h = data.hand || {};
-        const t = h.turn || {};
-        const cp = t.order?.[t.index] || null;
-        const orderLen = (t.order || []).length;
-        if (h.status !== street || cp !== uid) {
-          throw { code: 'TURN_MISMATCH' };
+        const room = snap.data();
+        if (room.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+        const hand = room.hand || {};
+        const turn = hand.turn || {};
+        const bet = hand.betting || {};
+        const pid = turn.order?.[turn.index] || null;
+        if (hand.status !== turn.street || pid !== uid) throw { code: 'TURN_MISMATCH' };
+        if (!bet.in?.[uid] || bet.allIn?.[uid]) throw { code: 'CANNOT_ACT' };
+        bet.in[uid] = false;
+        let remaining = 0; for (const p in bet.in) if (bet.in[p]) remaining++;
+        if (remaining <= 1) {
+          hand.turn.roundComplete = true;
+          bet.roundClosed = true;
+          hand.result = { pending: true, reason: 'everyoneFolded' };
         }
-        let newIndex = t.index + 1;
-        let roundComplete = false;
-        if (newIndex >= orderLen) {
-          roundComplete = true;
-          newIndex = 0;
-        }
-        tx.update(currentRoomRef, {
-          'hand.turn.index': newIndex,
-          'hand.turn.roundComplete': roundComplete
-        });
-        return { index: newIndex, orderLen, roundComplete };
+        const nextIdx = nextActiveIndex(turn.order || [], turn.index, bet);
+        turn.index = nextIdx;
+        tx.update(currentRoomRef, { hand });
       });
-      window.DEBUG?.log('turn.advance.index', { street, index: res.index, orderLen: res.orderLen });
-      if (res.roundComplete) window.DEBUG?.log('turn.round.complete', { street });
+      const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
+      await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: 'fold', ts: serverTimestamp() });
+      window.DEBUG?.log('action.fold.success', { pid: uid });
     } catch (e) {
-      if (e.code === 'TURN_MISMATCH') {
-        window.DEBUG?.log('action.intent.idempotent', { street });
-      } else {
-        window.DEBUG?.log('turn.advance.error', { code: e.code || 'UNKNOWN' });
-      }
+      window.DEBUG?.log('action.fold.error', { code: e.code || 'UNKNOWN' });
+    }
+    renderActionControls(currentRoom);
+  });
+}
+
+if (checkBtn) {
+  checkBtn.addEventListener('click', async () => {
+    const uid = auth.currentUser?.uid;
+    try {
+      const txRes = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(currentRoomRef);
+        if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+        const room = snap.data();
+        if (room.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+        const hand = room.hand || {};
+        const turn = hand.turn || {};
+        const bet = hand.betting || {};
+        const order = turn.order || [];
+        const pid = order[turn.index] || null;
+        if (hand.status !== turn.street || pid !== uid) throw { code: 'TURN_MISMATCH' };
+        if (!bet.in?.[uid] || bet.allIn?.[uid]) throw { code: 'CANNOT_ACT' };
+        const committed = bet.committed?.[uid] || 0;
+        const toCall = Math.max(0, (bet.currentBet || 0) - committed);
+        const stack = bet.stacks?.[uid] || 0;
+        if (toCall > 0) {
+          const pay = Math.min(toCall, stack);
+          bet.committed[uid] = committed + pay;
+          bet.stacks[uid] = stack - pay;
+          bet.pot += pay;
+          if (bet.stacks[uid] === 0) bet.allIn[uid] = true;
+          window.DEBUG?.log('action.call.success', { pid: uid, amount: pay, pot: bet.pot });
+          const nextIdx = nextActiveIndex(order, turn.index, bet);
+          turn.index = nextIdx;
+          if (order[nextIdx] === hand.turn.untilPid && everyoneMatchedOrAllIn(bet)) {
+            hand.turn.roundComplete = true;
+            bet.roundClosed = true;
+            window.DEBUG?.log('betting.round.closed', { street: bet.street });
+          }
+          tx.update(currentRoomRef, { hand });
+          return { type: 'call', amount: pay };
+        } else {
+          const nextIdx = nextActiveIndex(order, turn.index, bet);
+          turn.index = nextIdx;
+          if (order[nextIdx] === hand.turn.untilPid && everyoneMatchedOrAllIn(bet)) {
+            hand.turn.roundComplete = true;
+            bet.roundClosed = true;
+            window.DEBUG?.log('betting.round.closed', { street: bet.street });
+          }
+          tx.update(currentRoomRef, { hand });
+          window.DEBUG?.log('action.check.success', { pid: uid });
+          return { type: 'check', amount: 0 };
+        }
+      });
+      const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
+      await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: txRes.type, amount: txRes.amount, ts: serverTimestamp() });
+    } catch (e) {
+      window.DEBUG?.log('action.check.error', { code: e.code || 'UNKNOWN' });
+    }
+    renderActionControls(currentRoom);
+  });
+}
+
+if (betBtn) {
+  betBtn.addEventListener('click', async () => {
+    const uid = auth.currentUser?.uid;
+    const desired = parseInt(betInput?.value || '0', 10);
+    try {
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(currentRoomRef);
+        if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+        const room = snap.data();
+        if (room.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+        const hand = room.hand || {};
+        const turn = hand.turn || {};
+        const bet = hand.betting || {};
+        const order = turn.order || [];
+        const pid = order[turn.index] || null;
+        if (hand.status !== turn.street || pid !== uid) throw { code: 'TURN_MISMATCH' };
+        if (!bet.in?.[uid] || bet.allIn?.[uid]) throw { code: 'CANNOT_ACT' };
+        const committed = bet.committed?.[uid] || 0;
+        const stack = bet.stacks?.[uid] || 0;
+        const minTo = (bet.currentBet || 0) === 0 ? (room.config?.bb || DEFAULT_CONFIG.bb) : bet.minRaiseTo;
+        const maxTo = committed + stack;
+        let desiredTo = Math.max(minTo, Math.min(desired, maxTo));
+        const delta = desiredTo - committed;
+        if (delta <= 0) throw { code: 'INVALID_BET' };
+        bet.committed[uid] = desiredTo;
+        bet.stacks[uid] = stack - delta;
+        bet.pot += delta;
+        if (bet.stacks[uid] === 0) bet.allIn[uid] = true;
+        const prevBet = bet.currentBet || 0;
+        bet.currentBet = Math.max(prevBet, desiredTo);
+        const effectiveRaise = bet.currentBet - prevBet;
+        if (effectiveRaise >= (bet.lastRaiseSize || 0)) {
+          bet.lastRaiseSize = effectiveRaise;
+          bet.minRaiseTo = bet.currentBet + bet.lastRaiseSize;
+        }
+        bet.lastAggressorPid = uid;
+        hand.turn.untilPid = uid;
+        const nextIdx = nextActiveIndex(order, turn.index, bet);
+        turn.index = nextIdx;
+        tx.update(currentRoomRef, { hand });
+        const type = prevBet === 0 ? 'bet' : 'raise';
+        window.DEBUG?.log(`action.${type}.success`, { pid: uid, to: desiredTo, delta, pot: bet.pot });
+        return { to: desiredTo, delta, type };
+      });
+      const actionsRef = collection(db, 'rooms', roomCode, 'hands', currentRoom.hand.id, 'actions');
+      await addDoc(actionsRef, { pid: uid, street: currentRoom.hand.status, type: txRes.type, to: txRes.to, delta: txRes.delta, ts: serverTimestamp() });
+    } catch (e) {
+      window.DEBUG?.log('action.bet.error', { code: e.code || 'UNKNOWN' });
     }
     renderActionControls(currentRoom);
   });
@@ -915,11 +1070,91 @@ async function maybeInitTurn(room) {
   }
 }
 
+async function maybeInitBetting(room) {
+  const hand = room?.hand || {};
+  if (room?.state !== 'hand') return;
+  if (hand.status !== 'preflop' || hand.variant !== 'HE') return;
+  if (hand.betting?.initialized) return;
+  try {
+    const res = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(currentRoomRef);
+      if (!snap.exists()) throw { code: 'ROOM_MISSING' };
+      const rm = snap.data();
+      if (rm.state !== 'hand') throw { code: 'NOT_IN_HAND' };
+      const h = rm.hand || {};
+      if (h.status !== 'preflop' || h.variant !== 'HE') return { type: 'NOP' };
+      if (h.betting?.initialized) return { type: 'IDEMPOTENT' };
+      const seats = rm.seats || [];
+      const participants = h.participants || [];
+      const occupied = (idx) => {
+        const pid = seats[idx];
+        return pid && participants.includes(pid);
+      };
+      const nextOccupied = (start) => {
+        for (let k = 1; k <= 9; k++) {
+          const s = (start + k) % 9;
+          if (occupied(s)) return s;
+        }
+        return null;
+      };
+      const dealerSeat = h.dealerSeat;
+      const sbSeat = nextOccupied(dealerSeat);
+      const bbSeat = nextOccupied(sbSeat ?? dealerSeat);
+      const sbPid = seats[sbSeat];
+      const bbPid = seats[bbSeat];
+      const stacks = {}; const committed = {}; const inMap = {}; const allIn = {};
+      for (const pid of participants) {
+        stacks[pid] = rm.players?.[pid]?.stack ?? rm.config?.startingStack ?? DEFAULT_CONFIG.startingStack;
+        committed[pid] = 0;
+        inMap[pid] = true;
+        allIn[pid] = false;
+      }
+      const sb = rm.config?.sb ?? DEFAULT_CONFIG.sb;
+      const bb = rm.config?.bb ?? DEFAULT_CONFIG.bb;
+      committed[sbPid] += sb; stacks[sbPid] -= sb;
+      committed[bbPid] += bb; stacks[bbPid] -= bb;
+      if (stacks[sbPid] < 0) { committed[sbPid] += stacks[sbPid]; stacks[sbPid] = 0; allIn[sbPid] = true; }
+      if (stacks[bbPid] < 0) { committed[bbPid] += stacks[bbPid]; stacks[bbPid] = 0; allIn[bbPid] = true; }
+      const pot = committed[sbPid] + committed[bbPid];
+      const bet = {
+        initialized: true,
+        street: 'preflop',
+        pot,
+        currentBet: bb,
+        lastRaiseSize: bb,
+        minRaiseTo: bb * 2,
+        committed,
+        stacks,
+        in: inMap,
+        allIn,
+        sb, bb,
+        sbPid, bbPid,
+        lastAggressorPid: bbPid,
+        roundClosed: false
+      };
+      h.betting = bet;
+      h.turn = h.turn || {};
+      h.turn.untilPid = bbPid;
+      tx.update(currentRoomRef, { hand: h });
+      return { type: 'INIT', sb, bb, pot, sbPid, bbPid };
+    });
+    if (res?.type === 'INIT') {
+      window.DEBUG?.log('betting.init.success', res);
+    } else if (res?.type === 'IDEMPOTENT') {
+      window.DEBUG?.log('betting.init.idempotent', {});
+    }
+  } catch (e) {
+    window.DEBUG?.log('betting.init.error', { code: e.code || 'UNKNOWN' });
+  }
+}
+
 function renderRoom(data) {
   currentRoom = data;
+  ensureRoomConfig(currentRoom);
   activeSeated = countActiveSeated(data, Date.now(), PRESENCE.STALE_AFTER_MS);
   ensureMyHandListener(data);
   maybeInitTurn(data);
+  maybeInitBetting(data);
   let source = 'none';
   if (data.state === 'idle') {
     if (typeof data.dealerSeat === 'number') {
@@ -973,6 +1208,7 @@ function renderRoom(data) {
     if (!seatEl) continue;
     const nameEl = seatEl.querySelector('.name');
     const stackEl = seatEl.querySelector('.stack');
+    const committedEl = seatEl.querySelector('.committed');
     const badgesEl = seatEl.querySelector('.badges');
     const sIdx = serverSeatForUi(uiIndex);
     const pid = data.seats ? data.seats[sIdx] : null;
@@ -986,14 +1222,33 @@ function renderRoom(data) {
         nameEl.after(dotEl);
       }
       dotEl.className = `status-dot ${player.active ? 'active' : 'inactive'}`;
-      stackEl.textContent = '$—';
+      const bet = data.hand?.betting || {};
+      const stack = bet.stacks?.[pid];
+      const committed = bet.committed?.[pid] || 0;
+      if (stack != null) stackEl.textContent = `$${stack}`; else stackEl.textContent = '$—';
+      if (committedEl) committedEl.textContent = `in pot: $${committed}`;
       seatEl.classList.toggle('me', pid === uid);
+      seatEl.classList.toggle('folded', bet.in && bet.in[pid] === false);
+      let allInEl = badgesEl.querySelector('.all-in-badge');
+      if (bet.allIn && bet.allIn[pid]) {
+        if (!allInEl) {
+          allInEl = document.createElement('span');
+          allInEl.className = 'all-in-badge';
+          allInEl.textContent = 'All-in';
+          badgesEl.appendChild(allInEl);
+        }
+        allInEl.style.display = 'inline-block';
+      } else if (allInEl) {
+        allInEl.remove();
+      }
     } else {
       nameEl.textContent = `Seat ${sIdx + 1} (empty)`;
       const dotEl = seatEl.querySelector('.status-dot');
       if (dotEl) dotEl.remove();
       stackEl.textContent = '$—';
+      if (committedEl) committedEl.textContent = 'in pot: $0';
       seatEl.classList.remove('me');
+      seatEl.classList.remove('folded');
     }
     seatEl.classList.toggle('turn', pid && pid === currentPid);
 
@@ -1118,6 +1373,19 @@ function ensureMyHandListener(room) {
       renderRoom(currentRoom);
     }
   });
+}
+
+async function ensureRoomConfig(room) {
+  if (!room) return;
+  if (room.config) return;
+  try {
+    if (currentRoomRef) {
+      await updateDoc(currentRoomRef, { config: DEFAULT_CONFIG });
+    }
+  } catch (e) {
+    // ignore
+  }
+  room.config = { ...DEFAULT_CONFIG };
 }
 
 async function maybeRunDeal(room) {
