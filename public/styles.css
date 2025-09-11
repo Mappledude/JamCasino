@@ -45,10 +45,20 @@ header {
 .seat .badges {
   margin-top: 4px;
   height: 14px;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
 }
 
 .dealer-btn, .sb-badge, .bb-badge {
   display: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  color: #000;
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .seat-0 { top: 90%; left: 50%; }
@@ -106,6 +116,11 @@ header {
 .action-bar button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+button:disabled,
+select:disabled {
+  pointer-events: auto;
 }
 
 #debug-panel {

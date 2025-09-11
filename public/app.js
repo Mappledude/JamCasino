@@ -23,6 +23,11 @@ const PRESENCE = {
 let roomCode = null;
 let heartbeatTimer = null;
 let sweeperTimer = null;
+let currentRoomRef = null;
+let currentRoom = null;
+let derivedDealerSeat = null;
+let activeSeated = 0;
+let lastGateReason = null;
 
 document.getElementById('debug-room').textContent = roomCode ?? '—';
 
@@ -80,6 +85,139 @@ document.getElementById('preview-btn').addEventListener('click', () => {
   container.innerHTML = '';
   container.appendChild(img);
 });
+
+// --- Gated controls ---
+const dealBtn = document.getElementById('deal');
+const variantSelect = document.getElementById('variant');
+if (variantSelect) {
+  if (variantSelect.options[0]) variantSelect.options[0].value = 'HE';
+  if (variantSelect.options[1]) variantSelect.options[1].value = 'OMA';
+}
+
+const uiDealLock = { active: false, timer: null, TTL_MS: 3000 };
+function setUiDealLock(on) {
+  if (on) {
+    if (uiDealLock.active) return;
+    uiDealLock.active = true;
+    window.DEBUG?.log('hand.lock.ui.set', { ttl: uiDealLock.TTL_MS });
+    uiDealLock.timer = setTimeout(() => {
+      uiDealLock.active = false;
+      uiDealLock.timer = null;
+      window.DEBUG?.log('hand.lock.ui.release', {});
+      renderGatedControls();
+    }, uiDealLock.TTL_MS);
+  } else {
+    if (!uiDealLock.active) return;
+    clearTimeout(uiDealLock.timer);
+    uiDealLock.active = false;
+    uiDealLock.timer = null;
+    window.DEBUG?.log('hand.lock.ui.release', { manual: true });
+    renderGatedControls();
+  }
+}
+
+function computeEarliestJoinerSeat(room) {
+  const { players = {}, seats = [] } = room || {};
+  let best = null;
+  Object.entries(players).forEach(([pid, p]) => {
+    const seatIdx = p?.seat ?? null;
+    if (seatIdx == null) return;
+    const ts = p?.joinedAt?.toMillis?.() ?? p?.lastSeen?.toMillis?.() ?? Number.MAX_SAFE_INTEGER;
+    if (!best || ts < best.joinedAtMillis) best = { pid, seatIdx, joinedAtMillis: ts };
+  });
+  return best ? best.seatIdx : null;
+}
+
+function countActivePlayers(room, nowMs = Date.now()) {
+  const { players = {} } = room || {};
+  let n = 0;
+  for (const p of Object.values(players)) {
+    const last = p?.lastSeen?.toMillis?.() ?? 0;
+    const isActive = p?.active === true && (nowMs - last) <= PRESENCE.STALE_AFTER_MS;
+    if (isActive && typeof p?.seat === 'number') n++;
+  }
+  return n;
+}
+
+function renderGatedControls() {
+  const state = currentRoom?.state;
+  const variant = currentRoom?.variant || null;
+  const uid = auth.currentUser?.uid;
+  const mySeat = currentRoom?.players?.[uid]?.seat ?? null;
+  const isDealer = mySeat != null && derivedDealerSeat != null && mySeat === derivedDealerSeat;
+
+  let reason = null;
+  if (!isDealer) reason = 'notDealer';
+  else if (state !== 'idle') reason = 'notIdle';
+  else if (activeSeated < 2) reason = 'players<2';
+  else if (!(variant === 'HE' || variant === 'OMA')) reason = 'noVariant';
+  else if (uiDealLock.active) reason = 'uiLock';
+
+  lastGateReason = reason;
+
+  if (dealBtn) {
+    dealBtn.disabled = reason !== null;
+    dealBtn.setAttribute('aria-busy', uiDealLock.active ? 'true' : 'false');
+    let title = '';
+    if (reason === 'notDealer') title = 'Dealer only';
+    else if (reason === 'notIdle') title = 'Hand in progress';
+    else if (reason === 'players<2') title = 'Need at least 2 active players';
+    else if (reason === 'noVariant') title = 'Select a variant';
+    else if (reason === 'uiLock') title = 'Please wait…';
+    dealBtn.title = title;
+  }
+
+  if (variantSelect) {
+    const variantEnabled = isDealer && state === 'idle';
+    variantSelect.disabled = !variantEnabled;
+    let vTitle = '';
+    if (!isDealer) vTitle = 'Dealer only';
+    else if (state !== 'idle') vTitle = 'Hand in progress';
+    variantSelect.title = vTitle;
+    if (variant) {
+      variantSelect.value = variant;
+    } else {
+      variantSelect.value = '';
+      variantSelect.selectedIndex = -1;
+    }
+  }
+
+  window.DEBUG?.log('ui.gate.evaluate', {
+    isDealer,
+    state,
+    activeSeated,
+    variant: variant,
+    uiLock: uiDealLock.active
+  });
+}
+
+if (dealBtn) {
+  dealBtn.addEventListener('click', () => {
+    if (dealBtn.disabled) {
+      window.DEBUG?.log('ui.deal.click.blocked', { reason: lastGateReason || 'uiLock' });
+      return;
+    }
+    window.DEBUG?.log('ui.deal.click', { variant: currentRoom?.variant });
+    setUiDealLock(true);
+    window.DEBUG?.log('hand.deal.compose.pending', { note: 'UI-only in this brief' });
+    renderGatedControls();
+  });
+}
+
+if (variantSelect) {
+  variantSelect.addEventListener('change', async (e) => {
+    const value = e.target.value;
+    if (!currentRoomRef) return;
+    try {
+      await updateDoc(currentRoomRef, { variant: value });
+      window.DEBUG?.log('variant.select', { value });
+    } catch (err) {
+      // ignore
+    }
+    if (currentRoom) currentRoom.variant = value;
+    renderGatedControls();
+  });
+}
 
 function normalizeRoomCode(raw) {
   const s = (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -307,6 +445,7 @@ async function submitJoin(mode) {
     closeJoin();
 
     const roomRef = doc(db, 'rooms', code);
+    currentRoomRef = roomRef;
     await updateDoc(roomRef, {
       [`players.${uid}.lastSeen`]: serverTimestamp(),
       [`players.${uid}.active`]: true
@@ -335,6 +474,22 @@ async function submitJoin(mode) {
 }
 
 function renderRoom(data) {
+  currentRoom = data;
+  activeSeated = countActivePlayers(data);
+  let source = 'none';
+  if (data.state === 'idle') {
+    if (typeof data.dealerSeat === 'number') {
+      derivedDealerSeat = data.dealerSeat;
+      source = 'room';
+    } else {
+      derivedDealerSeat = computeEarliestJoinerSeat(data);
+      source = derivedDealerSeat == null ? 'none' : 'derived';
+    }
+  } else {
+    derivedDealerSeat = null;
+  }
+  window.DEBUG?.log('dealer.compute', { derivedSeat: derivedDealerSeat, source });
+
   const uid = auth.currentUser?.uid;
   const mySeat = data.players?.[uid]?.seat ?? null;
   const serverSeatForUi = (uiIndex) => {
@@ -353,6 +508,7 @@ function renderRoom(data) {
     if (!seatEl) continue;
     const nameEl = seatEl.querySelector('.name');
     const stackEl = seatEl.querySelector('.stack');
+    const badgesEl = seatEl.querySelector('.badges');
     const sIdx = serverSeatForUi(uiIndex);
     const pid = data.seats ? data.seats[sIdx] : null;
     if (pid) {
@@ -374,5 +530,20 @@ function renderRoom(data) {
       stackEl.textContent = '$—';
       seatEl.classList.remove('me');
     }
+
+    let dealerEl = badgesEl.querySelector('.dealer-btn');
+    if (data.state === 'idle' && derivedDealerSeat != null && sIdx === derivedDealerSeat) {
+      if (!dealerEl) {
+        dealerEl = document.createElement('span');
+        dealerEl.className = 'dealer-btn';
+        dealerEl.textContent = 'D';
+        badgesEl.appendChild(dealerEl);
+      }
+      dealerEl.style.display = 'inline-block';
+    } else {
+      if (dealerEl) dealerEl.remove();
+    }
   }
+
+  renderGatedControls();
 }
