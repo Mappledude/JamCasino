@@ -22,12 +22,15 @@
     <input id="bb" type="number" step="0.01" placeholder="Big Blind ($0.50)" />
     <button id="create-table">Create Table</button>
     <div id="log"></div>
+    <button id="btn-delete-all" class="danger">Delete ALL Rooms</button>
+    <small>Removes all rooms and their private hand docs. Irreversible.</small>
   </div>
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { Debug } from './debug.js';
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, serverTimestamp, collection, getDocs, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyDW9Subu-SEcSoe-uHNT8FzazZhgRknOHg",
@@ -42,6 +45,8 @@
     const auth = getAuth(app);
     await signInAnonymously(auth);
     const db = getFirestore(app);
+    const debug = new Debug({});
+    window.DEBUG = debug;
 
     const codeInput = document.getElementById('room-code');
     const minBuyInput = document.getElementById('min-buy');
@@ -50,6 +55,7 @@
     const bbInput = document.getElementById('bb');
     const createBtn = document.getElementById('create-table');
     const logEl = document.getElementById('log');
+    const deleteBtn = document.getElementById('btn-delete-all');
 
     function log(event, payload={}){
       const entry = { ts: new Date().toISOString(), event, payload };
@@ -98,6 +104,47 @@
       msg.appendChild(openBtn);
       logEl.appendChild(msg);
     };
+
+    deleteBtn.onclick = async () => {
+      if (!confirm('Delete ALL rooms? This cannot be undone.')) return;
+      if (!confirm('Really delete ALL rooms?')) return;
+      try {
+        await deleteAllRooms();
+        alert('All rooms deleted.');
+        DEBUG?.log('admin.rooms.deleteAll.success', {});
+      } catch (e) {
+        console.error(e);
+        alert('Delete failed. Check console.');
+        DEBUG?.log('admin.rooms.deleteAll.error', { message: e?.message });
+      }
+    };
+
+    async function deleteAllRooms() {
+      const roomsSnap = await getDocs(collection(db, 'rooms'));
+      for (const roomDoc of roomsSnap.docs) {
+        const roomRef = roomDoc.ref;
+        const playersSnap = await getDocs(collection(roomRef, 'players'));
+        const playerIds = [];
+        if (playersSnap.empty) {
+          const data = roomDoc.data() || {};
+          if (data.players) playerIds.push(...Object.keys(data.players));
+        } else {
+          playersSnap.forEach(d => playerIds.push(d.id));
+        }
+
+        for (const pid of playerIds) {
+          const handsSnap = await getDocs(collection(roomRef, 'players', pid, 'hands'));
+          let batch = writeBatch(db); let count = 0;
+          for (const hand of handsSnap.docs) {
+            batch.delete(hand.ref); count++;
+            if (count >= 400) { await batch.commit(); batch = writeBatch(db); count = 0; }
+          }
+          if (count) await batch.commit();
+        }
+
+        await deleteDoc(roomRef);
+      }
+    }
   </script>
 </body>
 </html>

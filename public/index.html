@@ -3,22 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <title>JamCasino — Lobby</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header class="lobby-header">
     <h1>Lobby</h1>
-    <span id="my-name"></span>
-    <div id="wallet-badge">$
-      <span id="wallet-balance">0</span>
-    </div>
+    <div id="wallet-badge">$<span id="wallet-balance">0</span></div>
   </header>
   <main id="rooms-grid" class="rooms-grid"></main>
-  <script>
-    const n = sessionStorage.getItem('playerName');
-    const el = document.getElementById('my-name');
-    if (n && el) el.textContent = n;
-  </script>
   <script type="module" src="/lobby.js"></script>
 </body>
 </html>
