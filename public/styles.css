@@ -1,0 +1,142 @@
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #e5e5e5;
+  color: #222;
+}
+
+#content {
+  display: flex;
+}
+
+header {
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #ccc;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.table-wrap {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.poker-table {
+  position: relative;
+  width: 900px;
+  height: 600px;
+  background: radial-gradient(circle at center, #1b8540, #0e5c29);
+  border-radius: 50%;
+  box-shadow: inset 0 0 30px rgba(0,0,0,0.6);
+}
+
+.seat {
+  position: absolute;
+  width: 100px;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.seat .badges {
+  margin-top: 4px;
+  height: 14px;
+}
+
+.dealer-btn, .sb-badge, .bb-badge {
+  display: none;
+}
+
+.seat-0 { top: 90%; left: 50%; }
+.seat-1 { top: 80.6%; left: 75.7%; }
+.seat-2 { top: 56.9%; left: 89.4%; }
+.seat-3 { top: 30%; left: 84.6%; }
+.seat-4 { top: 12.4%; left: 63.7%; }
+.seat-5 { top: 12.4%; left: 36.3%; }
+.seat-6 { top: 30%; left: 15.4%; }
+.seat-7 { top: 56.9%; left: 10.6%; }
+.seat-8 { top: 80.6%; left: 24.3%; }
+
+#board {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 12px;
+}
+
+#my-board {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+#my-board .hole-cards {
+  display: flex;
+  gap: 12px;
+}
+
+.card-slot {
+  width: 72px;
+  height: 96px;
+  border-radius: 8px;
+  background-size: cover;
+}
+
+.card-slot.empty {
+  border: 2px dashed rgba(0,0,0,0.2);
+  background: rgba(255,255,255,0.1);
+}
+
+.action-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.action-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#debug-panel {
+  width: 340px;
+  border-left: 1px solid #ccc;
+  padding: 10px;
+  box-sizing: border-box;
+  height: 100vh;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  background: #fafafa;
+}
+
+#debug-panel .debug-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+#card-tester {
+  margin-bottom: 8px;
+}
+
+#card-preview img {
+  width: 72px;
+  height: 96px;
+}
+
+#debug-log {
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
