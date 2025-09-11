@@ -11,15 +11,13 @@
     <div>Room: <span id="room-code">—</span> <span>(player: <span id="player-id">—</span>)</span></div>
     <button id="open-join">Join or Create</button>
     <label class="variant-label">
-      Variant
-      <select id="variant" disabled title="Dealer only">
-        <option value="" selected>—</option>
+      Next Hand Variant
+      <select id="variant-pref" title="Only the upcoming dealer can change this">
         <option value="HE">Texas Hold’em</option>
         <option value="OMA">Omaha</option>
       </select>
     </label>
-    <span id="variant-chip" class="variant-chip hidden">—</span>
-    <button id="deal" disabled>Deal</button>
+    <span id="variant-locked-chip" class="variant-chip hidden">—</span>
     <button id="btn-settle" disabled title="Settle at showdown">Settle Hand</button>
   </header>
   <div id="content">
