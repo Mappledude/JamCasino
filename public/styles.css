@@ -1,5 +1,5 @@
 :root{
-  --felt:#0c6a2a; --felt-dark:#06511f; /* GREEN TABLE */
+  --felt:#0b3a78; --felt-dark:#072a58; /* BLUE TABLE */
   --gold:#ffd75e;
   --ink:#0f1115; --ink-2:#171a21; --ink-3:#222633;
   --muted:#9aa0a6; --ok:#25d366; --warn:#f5a623; --danger:#ff4d4f;
@@ -12,7 +12,7 @@ header .left{ display:flex; align-items:center; gap:8px; }
 .table-wrap{ flex:1; display:flex; align-items:center; justify-content:center; padding:16px; }
 .poker-table{
   position:relative; width:1000px; height:640px; background: radial-gradient(ellipse at center, var(--felt) 0%, var(--felt-dark) 80%);
-  border-radius:36px; box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 10px #093d18, inset 0 0 0 14px #04240e;
+  border-radius:36px; box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 10px #081f44, inset 0 0 0 14px #051433;
 }
 /* Seats */
 .seat{ position:absolute; width:140px; height:90px; }
@@ -70,6 +70,8 @@ header .left{ display:flex; align-items:center; gap:8px; }
 
 /* Lobby */
 .lobby{ max-width:800px; margin:40px auto; display:flex; flex-direction:column; gap:16px; color:#e9edf3; }
-.lobby-list{ display:flex; flex-direction:column; gap:12px; }
+.lobby-header{ display:flex; justify-content:space-between; align-items:center; padding:16px; background:var(--ink-2); border-bottom:1px solid #2b3040; color:#e9edf3; }
+.wallet-badge{ padding:4px 8px; border-radius:8px; background:var(--ink-2); border:1px solid rgba(255,255,255,.2); }
+.lobby-list{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
 .room-card{ background:var(--ink-2); padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; }
 .room-card button{ padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,.2); background:var(--gold); color:var(--ink); cursor:pointer; }
