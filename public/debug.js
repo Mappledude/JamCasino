@@ -14,7 +14,7 @@ export class Debug {
 
     this.filterEl = document.getElementById('debug-filter');
     const stored = localStorage.getItem('debug.filter.groups');
-    this.enabledGroups = new Set(stored ? JSON.parse(stored) : ['ui','hand','betting','street','settle','presence','wallet']);
+    this.enabledGroups = new Set(stored ? JSON.parse(stored) : ['ui','hand','betting','street','settle','presence','wallet','name']);
     if (this.filterEl) {
       this.filterEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         const g = cb.dataset.group;
