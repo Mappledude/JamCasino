@@ -13,7 +13,16 @@ import {
   serverTimestamp, updateDoc
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
+const PRESENCE = {
+  HEARTBEAT_MS: 10_000,
+  STALE_AFTER_MS: 45_000,
+  SWEEP_INTERVAL_MS: 15_000,
+  LOCK_TTL_MS: 20_000
+};
+
 let roomCode = null;
+let heartbeatTimer = null;
+let sweeperTimer = null;
 
 document.getElementById('debug-room').textContent = roomCode ?? '—';
 
@@ -115,6 +124,85 @@ document.addEventListener('keydown', (e) => {
 
 document.getElementById('create-room').addEventListener('click', () => submitJoin('create'));
 document.getElementById('join-room').addEventListener('click', () => submitJoin('join'));
+
+function startHeartbeat(roomRef, uid) {
+  const tick = () => {
+    updateDoc(roomRef, {
+      [`players.${uid}.lastSeen`]: serverTimestamp(),
+      [`players.${uid}.active`]: true
+    });
+    window.DEBUG?.log('presence.heartbeat.tick', { interval: PRESENCE.HEARTBEAT_MS });
+  };
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(tick, PRESENCE.HEARTBEAT_MS);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      tick();
+      window.DEBUG?.log('presence.heartbeat.wakeup', { visibility: 'visible' });
+    }
+  });
+
+  const unload = () => {
+    updateDoc(roomRef, {
+      [`players.${uid}.active`]: false,
+      [`players.${uid}.lastSeen`]: serverTimestamp()
+    }).catch(() => {});
+    window.DEBUG?.log('presence.unload.bestEffort', {});
+  };
+  window.addEventListener('pagehide', unload);
+  window.addEventListener('beforeunload', unload);
+}
+
+async function attemptEvict(roomRef, uid) {
+  try {
+    const result = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      const data = snap.data();
+      const now = Date.now();
+      const lock = data.evictionLock;
+      if (lock?.at && (now - lock.at.toMillis()) < PRESENCE.LOCK_TTL_MS) {
+        return { skip: { lockBy: lock.by, ageMs: now - lock.at.toMillis() } };
+      }
+
+      const players = data.players || {};
+      const seats = data.seats || [];
+      const freed = [];
+      for (const [pid, p] of Object.entries(players)) {
+        const lastSeen = p.lastSeen?.toMillis ? p.lastSeen.toMillis() : null;
+        const isStale = p.active !== true || (lastSeen && (now - lastSeen > PRESENCE.STALE_AFTER_MS));
+        if (isStale) {
+          if (p.seat != null && seats[p.seat] === pid) {
+            seats[p.seat] = null;
+            freed.push({ pid, seat: p.seat });
+            p.seat = null;
+          }
+          p.active = false;
+        }
+      }
+      const evictionLock = { by: uid, at: serverTimestamp() };
+      tx.update(roomRef, { players, seats, evictionLock });
+      return { freed };
+    });
+
+    if (result.skip) {
+      window.DEBUG?.log('presence.evict.skip', { reason: 'lockHeld', lockBy: result.skip.lockBy, ageMs: result.skip.ageMs });
+    } else if (result.freed.length > 0) {
+      window.DEBUG?.log('presence.evict.success', { freed: result.freed, totalFreed: result.freed.length });
+    } else {
+      window.DEBUG?.log('presence.evict.noop', { reason: 'noneStale' });
+    }
+  } catch (e) {
+    // ignore errors
+  }
+}
+
+function startEvictionSweeper(roomRef, uid) {
+  clearInterval(sweeperTimer);
+  sweeperTimer = setInterval(() => {
+    attemptEvict(roomRef, uid);
+  }, PRESENCE.SWEEP_INTERVAL_MS);
+}
 
 let roomUnsub = null;
 
@@ -224,6 +312,9 @@ async function submitJoin(mode) {
       [`players.${uid}.active`]: true
     });
 
+    startHeartbeat(roomRef, uid);
+    startEvictionSweeper(roomRef, uid);
+
     if (roomUnsub) roomUnsub();
     roomUnsub = onSnapshot(roomRef, (snap) => {
       const data = snap.data();
@@ -244,27 +335,44 @@ async function submitJoin(mode) {
 }
 
 function renderRoom(data) {
-  for (let i = 0; i < 9; i++) {
-    const seatEl = document.querySelector(`.seat-${i}`);
+  const uid = auth.currentUser?.uid;
+  const mySeat = data.players?.[uid]?.seat ?? null;
+  const serverSeatForUi = (uiIndex) => {
+    if (mySeat == null) return uiIndex;
+    return (mySeat + uiIndex) % 9;
+  };
+
+  if (mySeat == null) {
+    debug.log('ui.seats.rotate.skip', { reason: 'notSeated' });
+  } else {
+    debug.log('ui.seats.rotate.apply', { mySeat });
+  }
+
+  for (let uiIndex = 0; uiIndex < 9; uiIndex++) {
+    const seatEl = document.querySelector(`.seat-${uiIndex}`);
     if (!seatEl) continue;
     const nameEl = seatEl.querySelector('.name');
     const stackEl = seatEl.querySelector('.stack');
-    const uid = data.seats ? data.seats[i] : null;
-    if (uid) {
-      nameEl.textContent = data.players?.[uid]?.displayName || 'Player';
-      let statusEl = seatEl.querySelector('.status');
-      if (!statusEl) {
-        statusEl = document.createElement('span');
-        statusEl.className = 'status';
-        nameEl.after(statusEl);
+    const sIdx = serverSeatForUi(uiIndex);
+    const pid = data.seats ? data.seats[sIdx] : null;
+    if (pid) {
+      const player = data.players?.[pid] || {};
+      nameEl.textContent = pid === uid ? `${player.displayName || 'Player'} (you)` : (player.displayName || 'Player');
+      let dotEl = seatEl.querySelector('.status-dot');
+      if (!dotEl) {
+        dotEl = document.createElement('span');
+        dotEl.className = 'status-dot';
+        nameEl.after(dotEl);
       }
-      statusEl.textContent = 'idle';
+      dotEl.className = `status-dot ${player.active ? 'active' : 'inactive'}`;
       stackEl.textContent = '$—';
+      seatEl.classList.toggle('me', pid === uid);
     } else {
-      nameEl.textContent = `Seat ${i + 1} (empty)`;
-      const statusEl = seatEl.querySelector('.status');
-      if (statusEl) statusEl.remove();
+      nameEl.textContent = `Seat ${sIdx + 1} (empty)`;
+      const dotEl = seatEl.querySelector('.status-dot');
+      if (dotEl) dotEl.remove();
       stackEl.textContent = '$—';
+      seatEl.classList.remove('me');
     }
   }
 }
