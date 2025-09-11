@@ -8,28 +8,12 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-
     steps:
       - uses: actions/checkout@v4
 
-      # Authenticate to Google Cloud using your service account JSON in the secret
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
-      - name: Install firebase-tools
-        run: npm i -g firebase-tools
-
-      - name: Show firebase-tools version
-        run: firebase --version
-
-      - name: Deploy to Firebase Hosting (live)
-        run: >
-          firebase deploy
-          --only hosting:jamcasino-36b9a
-          --project jamcasino-36b9a
-          --non-interactive
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: jamcasino-36b9a
+          channelId: live
