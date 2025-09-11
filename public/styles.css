@@ -198,6 +198,23 @@ input.invalid {
   border: 2px solid #b00;
 }
 
+.seat.me {
+  outline: 2px solid rgba(255, 215, 0, 0.8);
+  box-shadow: 0 0 12px rgba(255,215,0,0.6);
+}
+
+.status-dot {
+  display:inline-block;
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  margin-left:6px;
+  vertical-align:middle;
+}
+
+.status-dot.active { background: #25d366; }
+.status-dot.inactive { background: #9aa0a6; }
+
 #join-error:empty {
   display: none;
 }
