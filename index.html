@@ -247,7 +247,11 @@
       });
       return out;
     };
-    const cardText = (c) => (c ? `${c.rank || ""}${c.suit || ""}` : "");
+    const cardText = (c) => {
+      if (!c) return "";
+      if (typeof c === "string") return c;
+      return `${c.rank || ""}${c.suit || ""}`;
+    };
 
     // ---------- Auth with per-tab session ----------
     await setPersistence(auth, browserSessionPersistence);
@@ -563,7 +567,13 @@ function setupActionBar(mePlayer, room) {
             if (pid === bbPid) { commit = Math.min(stack, bbC); stack = Math.max(0, stack - bbC); }
             committed[pid] = commit;
             potC += commit;
-            tx.update(pRef, { hole: [card1, card2], stack });
+            tx.update(pRef, {
+              hole: [
+                { rank: card1.rank, suit: card1.suit },
+                { rank: card2.rank, suit: card2.suit }
+              ],
+              stack
+            });
           }
           const handId = Date.now().toString(36);
           const lock = { name: 'deal', by: dealerUid, handId, at: serverTimestamp() };
