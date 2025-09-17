@@ -6,6 +6,7 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="boot-badge" class="boot-badge" role="status" aria-live="polite">Booting…</div>
   <header class="table-head">
     <button id="btn-leave" title="Leave room">⟵ Lobby</button>
     <div class="variant">
@@ -51,6 +52,7 @@
     </div>
   </main>
   <aside id="debug-panel"><div id="debug-log"></div></aside>
+  <script src="/boot-logger.js"></script>
   <script src="/poker-eval.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
