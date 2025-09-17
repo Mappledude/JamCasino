@@ -5,6 +5,10 @@
   --muted:#9aa0a6; --ok:#25d366; --warn:#f5a623; --danger:#ff4d4f;
 }
 body{ background:var(--ink-3); color:#e9edf3; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; margin:0; }
+.fs-error-banner{ position:fixed; top:0; left:0; right:0; padding:10px 16px; background:rgba(179,14,42,.95); color:#fff; font-weight:600; text-align:center; z-index:2000; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+.fs-error-banner.hidden{ display:none; }
+.boot-overlay-badge{ position:fixed; bottom:16px; right:16px; background:rgba(23,25,36,.92); color:#fff; padding:8px 12px; border-radius:12px; font-size:12px; line-height:1.4; max-width:260px; box-shadow:0 8px 20px rgba(0,0,0,.5); z-index:1900; }
+.boot-overlay-badge.hidden{ display:none; }
 header{ display:flex; align-items:center; gap:12px; padding:8px 16px; background:var(--ink-2); border-bottom:1px solid #2b3040; color:#e9edf3; }
 header .left{ display:flex; align-items:center; gap:8px; }
 .build-tag{ margin-left:8px; color:var(--muted); font-size:12px; }

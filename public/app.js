@@ -101,17 +101,34 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const bootDiag = window.BootDiagnostics || null;
+const reportFsListenerError = (scope, err) => {
+  bootDiag?.reportFsListenerError?.(scope, err);
+};
+const reportFsOpError = (scope, err) => {
+  bootDiag?.reportFsOpError?.(scope, err);
+};
+const clearFsError = () => {
+  bootDiag?.clearFsError?.();
+};
+bootDiag?.setStage?.('table:init');
 let walletBalance = 0;
 
 async function ensureWallet(uid){
   const wRef = doc(db,'wallets',uid);
-  const snap = await getDoc(wRef);
-  if(!snap.exists()){
-    await setDoc(wRef,{ balance:100, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
-    walletBalance = 100;
-    debug.log('wallet.init',{ balance:100 });
-  }else{
-    walletBalance = snap.data().balance || 0;
+  try {
+    const snap = await getDoc(wRef);
+    if(!snap.exists()){
+      await setDoc(wRef,{ balance:100, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
+      walletBalance = 100;
+      debug.log('wallet.init',{ balance:100 });
+    }else{
+      walletBalance = snap.data().balance || 0;
+    }
+    clearFsError();
+  } catch (err) {
+    reportFsOpError('table.ensureWallet', err);
+    throw err;
   }
 }
 
@@ -119,32 +136,38 @@ async function ensureWallet(uid){
 async function ensureRoomDisplayName(db, roomRef, uid) {
   const rx = /^Player(\d+)$/;
   let assigned = null;
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(roomRef);
-    if (!snap.exists()) throw new Error('Room missing');
-    const room = snap.data() || {};
-    const players = room.players || {};
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) throw new Error('Room missing');
+      const room = snap.data() || {};
+      const players = room.players || {};
 
-    const mine = players[uid] || {};
-    if (mine.displayName && rx.test(mine.displayName)) {
-      assigned = mine.displayName;
-      return;
-    }
-
-    const used = new Set();
-    Object.values(players).forEach(p => {
-      if (p && typeof p.displayName === 'string') {
-        const m = p.displayName.match(rx);
-        if (m) used.add(parseInt(m[1], 10));
+      const mine = players[uid] || {};
+      if (mine.displayName && rx.test(mine.displayName)) {
+        assigned = mine.displayName;
+        return;
       }
-    });
 
-    let n = 1;
-    while (used.has(n)) n++;
-    assigned = `Player${n}`;
-    const path = `players.${uid}.displayName`;
-    tx.update(roomRef, { [path]: assigned });
-  });
+      const used = new Set();
+      Object.values(players).forEach(p => {
+        if (p && typeof p.displayName === 'string') {
+          const m = p.displayName.match(rx);
+          if (m) used.add(parseInt(m[1], 10));
+        }
+      });
+
+      let n = 1;
+      while (used.has(n)) n++;
+      assigned = `Player${n}`;
+      const path = `players.${uid}.displayName`;
+      tx.update(roomRef, { [path]: assigned });
+    });
+    clearFsError();
+  } catch (err) {
+    reportFsOpError('table.ensureRoomDisplayName', err);
+    throw err;
+  }
 
   window.DEBUG?.log('name.assign.success', { displayName: assigned });
   return assigned;
@@ -161,9 +184,17 @@ onAuthStateChanged(auth, async (user) => {
   const playerSpan = document.getElementById('player-id');
   if (playerSpan) playerSpan.textContent = user.uid;
 
-  await ensureWallet(user.uid);
+  try {
+    await ensureWallet(user.uid);
+  } catch (err) {
+    return;
+  }
+
   if (initialRoom) {
-    await joinRoomByCode(initialRoom.toUpperCase());
+    try {
+      await joinRoomByCode(initialRoom.toUpperCase());
+    } catch (err) {
+    }
   }
   window.DEBUG?.log('firebase.init.ok', { appName: app.name });
   window.DEBUG?.log('auth.anon.signIn.success', { uid: user.uid, persistence: 'session' });
@@ -180,7 +211,9 @@ onAuthStateChanged(auth, async (user) => {
     leaveBtn.onclick = async () => {
       try {
         await safeUnseatAndCreditIfIdle();
-      } catch(_) {}
+      } catch(err) {
+        if (err?.code) reportFsOpError('table.leave.safeUnseat', err);
+      }
       debug.log('nav.table.leave', { roomCode });
       location.href = '/';
     };
@@ -590,6 +623,8 @@ async function sweepExpiredDealLock(db, roomRef) {
   } catch (e) {
     if (e.code === 'RELEASED') {
       window.DEBUG?.log('hand.lock.sweeper.release.success', {});
+    } else if (e?.code) {
+      reportFsOpError('table.sweepDealLock', e);
     }
   }
 
@@ -738,6 +773,7 @@ if (prefEl) {
       window.DEBUG?.log('variant.pref.set', { pid, value: val });
     } catch (err) {
       window.DEBUG?.log('variant.pref.error', { message: String(err) });
+      reportFsOpError('table.variantPref.update', err);
     }
   };
 }
@@ -808,6 +844,7 @@ if (nextStreetBtn) {
       }
     } catch (e) {
       window.DEBUG?.log('street.advance.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+      if (e?.code) reportFsOpError('table.street.advance', e);
     }
   });
 }
@@ -945,6 +982,7 @@ if (settleBtn) {
       }
     } catch (e) {
       window.DEBUG?.log('settle.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+      if (e?.code) reportFsOpError('table.settle', e);
     }
   });
 }
@@ -986,32 +1024,36 @@ async function onActionCommitted(roomRef){
   });
 }
 async function maybeAdvanceStreetAsDealer(roomRef, uid){
-  await runTransaction(db, async tx => {
-    const snap = await tx.get(roomRef); const room = snap.data(); if (!room?.hand) return;
-    if (room.hand.dealerPid !== uid) return; const b = room.hand.betting;
-    if (!b?.roundClosed) return;
-    const status = room.hand.status;
-    const deckSeed = room.code + room.hand.id;
-    const deck = shuffledDeck(deckSeed);
-    let append = [];
-    if (status === 'preflop') append = deck.slice(0,3);
-    else if (status === 'flop') append = deck.slice(3,4);
-    else if (status === 'turn') append = deck.slice(4,5);
-    else if (status === 'river') return;
-    const nextStatus = status === 'preflop' ? 'flop' : status === 'flop' ? 'turn' : 'river';
-    tx.update(roomRef, {
-      'hand.board': (room.hand.board || []).concat(append),
-      'hand.status': nextStatus,
-      'hand.betting.currentBet': 0,
-      'hand.betting.lastRaiseSize': b.bb,
-      'hand.betting.minRaiseTo': b.bb,
-      'hand.betting.committed': Object.fromEntries(Object.keys(b.committed || {}).map(pid => [pid,0])),
-      'hand.betting.roundClosed': false,
-      'hand.turn.index': 0,
-      'hand.turn.untilPid': null
+  try {
+    await runTransaction(db, async tx => {
+      const snap = await tx.get(roomRef); const room = snap.data(); if (!room?.hand) return;
+      if (room.hand.dealerPid !== uid) return; const b = room.hand.betting;
+      if (!b?.roundClosed) return;
+      const status = room.hand.status;
+      const deckSeed = room.code + room.hand.id;
+      const deck = shuffledDeck(deckSeed);
+      let append = [];
+      if (status === 'preflop') append = deck.slice(0,3);
+      else if (status === 'flop') append = deck.slice(3,4);
+      else if (status === 'turn') append = deck.slice(4,5);
+      else if (status === 'river') return;
+      const nextStatus = status === 'preflop' ? 'flop' : status === 'flop' ? 'turn' : 'river';
+      tx.update(roomRef, {
+        'hand.board': (room.hand.board || []).concat(append),
+        'hand.status': nextStatus,
+        'hand.betting.currentBet': 0,
+        'hand.betting.lastRaiseSize': b.bb,
+        'hand.betting.minRaiseTo': b.bb,
+        'hand.betting.committed': Object.fromEntries(Object.keys(b.committed || {}).map(pid => [pid,0])),
+        'hand.betting.roundClosed': false,
+        'hand.turn.index': 0,
+        'hand.turn.untilPid': null
+      });
+      window.DEBUG?.log('street.advance.tx.success', { status: nextStatus, appended: append.length });
     });
-    window.DEBUG?.log('street.advance.tx.success', { status: nextStatus, appended: append.length });
-  });
+  } catch (e) {
+    if (e?.code) reportFsOpError('table.maybeAdvanceStreet', e);
+  }
 }
 if (foldBtn) {
   foldBtn.addEventListener('click', async () => {
@@ -1045,6 +1087,7 @@ if (foldBtn) {
       window.DEBUG?.log('action.fold.success', { pid: uid });
     } catch (e) {
       window.DEBUG?.log('action.fold.error', { code: e.code || 'UNKNOWN' });
+      if (e?.code) reportFsOpError('table.action.fold', e);
     }
     renderActionControls(currentRoom);
   });
@@ -1106,6 +1149,7 @@ if (foldBtn) {
       await onActionCommitted(currentRoomRef);
     } catch (e) {
       window.DEBUG?.log('action.check.error', { code: e.code || 'UNKNOWN' });
+      if (e?.code) reportFsOpError('table.action.call', e);
     }
     renderActionControls(currentRoom);
   });
@@ -1116,7 +1160,7 @@ if (foldBtn) {
     const uid = auth.currentUser?.uid;
     const desired = parseInt(betInput?.value || '0', 10);
     try {
-      await runTransaction(db, async (tx) => {
+      const txRes = await runTransaction(db, async (tx) => {
         const snap = await tx.get(currentRoomRef);
         if (!snap.exists()) throw { code: 'ROOM_MISSING' };
         const room = snap.data();
@@ -1163,6 +1207,7 @@ if (foldBtn) {
       await onActionCommitted(currentRoomRef);
     } catch (e) {
       window.DEBUG?.log('action.bet.error', { code: e.code || 'UNKNOWN' });
+      if (e?.code) reportFsOpError('table.action.raise', e);
     }
     renderActionControls(currentRoom);
   });
@@ -1374,52 +1419,62 @@ async function joinRoomByCode(code){
   const uid = auth.currentUser?.uid;
   if(!uid) return;
   const roomRef = doc(db,'rooms',code);
-  const seat = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(roomRef);
-    if(!snap.exists()) throw { code:'ROOM_MISSING' };
-    const data = snap.data() || {};
-    const pathBase = `players.${uid}`;
-    const player = data.players?.[uid] || {};
-    if (!data.players || !data.players[uid]) {
-      tx.update(roomRef, {
-        [`${pathBase}.seat`]: null,
-        [`${pathBase}.lastSeen`]: serverTimestamp(),
-        [`${pathBase}.joinedAt`]: serverTimestamp(),
-        [`${pathBase}.active`]: true
-      });
-    } else {
-      tx.update(roomRef, {
-        [`${pathBase}.lastSeen`]: serverTimestamp(),
-        [`${pathBase}.active`]: true
-      });
-    }
-    return player.seat ?? null;
-  });
+  try {
+    const seat = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if(!snap.exists()) throw { code:'ROOM_MISSING' };
+      const data = snap.data() || {};
+      const pathBase = `players.${uid}`;
+      const player = data.players?.[uid] || {};
+      if (!data.players || !data.players[uid]) {
+        tx.update(roomRef, {
+          [`${pathBase}.seat`]: null,
+          [`${pathBase}.lastSeen`]: serverTimestamp(),
+          [`${pathBase}.joinedAt`]: serverTimestamp(),
+          [`${pathBase}.active`]: true
+        });
+      } else {
+        tx.update(roomRef, {
+          [`${pathBase}.lastSeen`]: serverTimestamp(),
+          [`${pathBase}.active`]: true
+        });
+      }
+      return player.seat ?? null;
+    });
 
-  roomCode = code;
-  window.APP = window.APP || {};
-  window.APP.roomCode = code;
-  const myName = await ensureRoomDisplayName(db, roomRef, uid);
-  document.documentElement.setAttribute('data-me-name', myName);
-  sessionStorage.setItem('playerName', myName);
-  renderMyConsole(myName);
-  debug.log('nav.table.enter', { roomCode: code });
-  document.getElementById('room-code').textContent = code;
-  currentRoomRef = roomRef;
-  startHeartbeat(currentRoomRef, uid);
-  startEvictionSweeper(currentRoomRef, uid);
-  clearInterval(dealLockSweeperTimer);
-  dealLockSweeperTimer = setInterval(() => sweepExpiredDealLock(db, currentRoomRef), DEAL_LOCK.SWEEP_INTERVAL_MS);
-  if (roomUnsub) roomUnsub();
-  roomUnsub = onSnapshot(currentRoomRef, (snap) => {
-    const data = snap.data();
-    renderRoom(data);
-    const playersCount = data.players ? Object.keys(data.players).length : 0;
-    const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
-    debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
-    if (data?.hand?.betting?.roundClosed) { maybeAdvanceStreetAsDealer(currentRoomRef, auth.currentUser?.uid); }
-  });
-  debug.log('room.join.success', { code, seat, displayName: myName });
+    roomCode = code;
+    window.APP = window.APP || {};
+    window.APP.roomCode = code;
+    bootDiag?.setStage?.(`table:${code}`);
+    const myName = await ensureRoomDisplayName(db, roomRef, uid);
+    document.documentElement.setAttribute('data-me-name', myName);
+    sessionStorage.setItem('playerName', myName);
+    renderMyConsole(myName);
+    debug.log('nav.table.enter', { roomCode: code });
+    document.getElementById('room-code').textContent = code;
+    currentRoomRef = roomRef;
+    startHeartbeat(currentRoomRef, uid);
+    startEvictionSweeper(currentRoomRef, uid);
+    clearInterval(dealLockSweeperTimer);
+    dealLockSweeperTimer = setInterval(() => sweepExpiredDealLock(db, currentRoomRef), DEAL_LOCK.SWEEP_INTERVAL_MS);
+    if (roomUnsub) roomUnsub();
+    roomUnsub = onSnapshot(currentRoomRef, (snap) => {
+      clearFsError();
+      const data = snap.data();
+      renderRoom(data);
+      const playersCount = data.players ? Object.keys(data.players).length : 0;
+      const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
+      debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
+      if (data?.hand?.betting?.roundClosed) { maybeAdvanceStreetAsDealer(currentRoomRef, auth.currentUser?.uid); }
+    }, (err) => {
+      reportFsListenerError('table.room', err);
+    });
+    debug.log('room.join.success', { code, seat, displayName: myName });
+    clearFsError();
+  } catch (err) {
+    reportFsOpError('table.joinRoom', err);
+    throw err;
+  }
 }
 
 async function submitJoin(mode) {
@@ -1515,6 +1570,7 @@ async function submitJoin(mode) {
     roomCode = code;
     window.APP = window.APP || {};
     window.APP.roomCode = code;
+    bootDiag?.setStage?.(`table:${code}`);
     document.getElementById('room-code').textContent = code;
     debug.log('room.join.success', { code, seat });
     if (created) {
@@ -1536,13 +1592,17 @@ async function submitJoin(mode) {
 
     if (roomUnsub) roomUnsub();
     roomUnsub = onSnapshot(roomRef, (snap) => {
+      clearFsError();
       const data = snap.data();
       renderRoom(data);
       const playersCount = data.players ? Object.keys(data.players).length : 0;
       const seatedCount = data.seats ? data.seats.filter(Boolean).length : 0;
       debug.log('room.snapshot', { players: playersCount, seated: seatedCount });
       if (data?.hand?.betting?.roundClosed) { maybeAdvanceStreetAsDealer(currentRoomRef, auth.currentUser?.uid); }
+    }, (err) => {
+      reportFsListenerError('table.room', err);
     });
+    clearFsError();
   } catch (err) {
     if (err.message === 'ROOM_FULL') {
       joinError.textContent = 'Room is full.';
@@ -1550,6 +1610,9 @@ async function submitJoin(mode) {
     } else {
       joinError.textContent = 'Failed to join room.';
       debug.log('room.join.error', { code, reason: 'UNKNOWN' });
+    }
+    if (err?.code) {
+      reportFsOpError('table.submitJoin', err);
     }
   }
 }
@@ -1585,7 +1648,7 @@ async function maybeInitTurn(room) {
     });
     window.DEBUG?.log('turn.init', { street: hand.status, orderLen: order.length });
   } catch (e) {
-    // ignore
+    if (e?.code) reportFsOpError('table.maybeInitTurn', e);
   }
 }
 
@@ -1668,6 +1731,7 @@ async function maybeInitBetting(room) {
     }
   } catch (e) {
     window.DEBUG?.log('betting.init.error', { code: e.code || 'UNKNOWN' });
+    if (e?.code) reportFsOpError('table.maybeInitBetting', e);
   }
 }
 
@@ -1897,6 +1961,7 @@ function ensureMyHandListener(room) {
   myHandId = handId;
   const handRef = doc(db, 'rooms', roomCode, 'players', uid, 'hands', handId);
   myHandUnsub = onSnapshot(handRef, (snap) => {
+    clearFsError();
     if (snap.exists()) {
       const data = snap.data();
       myHandCards = data.cards || [];
@@ -1905,6 +1970,8 @@ function ensureMyHandListener(room) {
       window.DEBUG?.log('ui.hole.render.mine', { cards: myHandCards });
       renderRoom(currentRoom);
     }
+  }, (err) => {
+    reportFsListenerError('table.hand', err);
   });
 }
 
@@ -1916,7 +1983,7 @@ async function ensureRoomConfig(room) {
       await updateDoc(currentRoomRef, { config: DEFAULT_CONFIG });
     }
   } catch (e) {
-    // ignore
+    if (e?.code) reportFsOpError('table.ensureRoomConfig', e);
   }
   room.config = { ...DEFAULT_CONFIG };
 }
@@ -1924,26 +1991,30 @@ async function ensureRoomConfig(room) {
 async function safeUnseatAndCreditIfIdle(){
   const uid = auth.currentUser?.uid;
   if(!uid || !currentRoomRef) return;
-  await runTransaction(db, async tx => {
-    const snap = await tx.get(currentRoomRef);
-    if(!snap.exists()) return;
-    const room = snap.data();
-    if(room.state !== 'idle') return;
-    const seat = room.players?.[uid]?.seat;
-    if(seat == null) return;
-    const seats = room.seats || [];
-    const stackMap = room.stacks || {};
-    const players = room.players || {};
-    const stack = stackMap[uid] || 0;
-    const wRef = doc(db,'wallets',uid);
-    const wSnap = await tx.get(wRef);
-    const bal = wSnap.data()?.balance || 0;
-    seats[seat] = null;
-    players[uid].seat = null;
-    delete stackMap[uid];
-    tx.update(wRef,{ balance: bal + stack });
-    tx.update(currentRoomRef,{ seats, players, stacks: stackMap });
-  });
+  try {
+    await runTransaction(db, async tx => {
+      const snap = await tx.get(currentRoomRef);
+      if(!snap.exists()) return;
+      const room = snap.data();
+      if(room.state !== 'idle') return;
+      const seat = room.players?.[uid]?.seat;
+      if(seat == null) return;
+      const seats = room.seats || [];
+      const stackMap = room.stacks || {};
+      const players = room.players || {};
+      const stack = stackMap[uid] || 0;
+      const wRef = doc(db,'wallets',uid);
+      const wSnap = await tx.get(wRef);
+      const bal = wSnap.data()?.balance || 0;
+      seats[seat] = null;
+      players[uid].seat = null;
+      delete stackMap[uid];
+      tx.update(wRef,{ balance: bal + stack });
+      tx.update(currentRoomRef,{ seats, players, stacks: stackMap });
+    });
+  } catch (e) {
+    if (e?.code) reportFsOpError('table.safeUnseat', e);
+  }
 }
 
 async function maybeLockNextVariant(room, gate) {
@@ -1974,7 +2045,7 @@ async function maybeLockNextVariant(room, gate) {
       window.DEBUG?.log('variant.lock.next', { value: res.value, dealerPid: res.dealerPid });
     }
   } catch (e) {
-    // ignore
+    if (e?.code) reportFsOpError('table.maybeLockNextVariant', e);
   }
 }
 
@@ -1997,6 +2068,7 @@ async function maybeAutoDeal(room, gate) {
     }
   } catch (e) {
     window.DEBUG?.log('hand.lock.tx.error', { code: e.code || 'UNKNOWN', detail: e });
+    if (e?.code) reportFsOpError('table.maybeAutoDeal', e);
   }
 }
 
@@ -2117,5 +2189,6 @@ async function runDealFlow(room) {
     window.DEBUG?.log('hand.deal.commit.success', { handId: hand.id });
   } catch (e) {
     window.DEBUG?.log('hand.deal.error', { code: e.code || 'UNKNOWN' });
+    if (e?.code) reportFsOpError('table.runDealFlow', e);
   }
 }

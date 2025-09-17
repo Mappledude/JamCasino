@@ -6,11 +6,14 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="fs-error-banner" class="fs-error-banner hidden" role="alert" aria-live="assertive"></div>
+  <div id="boot-overlay-badge" class="boot-overlay-badge hidden" aria-live="polite"></div>
   <header class="lobby-header">
     <h1>Lobby</h1>
     <div id="wallet-badge">$<span id="wallet-balance">0</span></div>
   </header>
   <main id="rooms-grid" class="rooms-grid"></main>
+  <script src="/diagnostics.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>

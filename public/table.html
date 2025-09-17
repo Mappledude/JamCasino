@@ -6,6 +6,8 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="fs-error-banner" class="fs-error-banner hidden" role="alert" aria-live="assertive"></div>
+  <div id="boot-overlay-badge" class="boot-overlay-badge hidden" aria-live="polite"></div>
   <header class="table-head">
     <button id="btn-leave" title="Leave room">⟵ Lobby</button>
     <div class="variant">
@@ -51,6 +53,7 @@
     </div>
   </main>
   <aside id="debug-panel"><div id="debug-log"></div></aside>
+  <script src="/diagnostics.js"></script>
   <script src="/poker-eval.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
