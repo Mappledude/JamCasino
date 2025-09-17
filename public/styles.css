@@ -8,6 +8,30 @@ body{ background:var(--ink-3); color:#e9edf3; font-family:system-ui,Segoe UI,Rob
 header{ display:flex; align-items:center; gap:12px; padding:8px 16px; background:var(--ink-2); border-bottom:1px solid #2b3040; color:#e9edf3; }
 header .left{ display:flex; align-items:center; gap:8px; }
 .build-tag{ margin-left:8px; color:var(--muted); font-size:12px; }
+.boot-badge{
+  position:fixed;
+  top:12px; left:12px;
+  display:none;
+  align-items:center;
+  padding:6px 12px;
+  border-radius:999px;
+  background:rgba(7,11,24,.92);
+  color:#fff;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.03em;
+  line-height:1.25;
+  box-shadow:0 10px 26px rgba(0,0,0,.4);
+  z-index:4000;
+  pointer-events:none;
+  max-width:82vw;
+  word-break:break-word;
+}
+.boot-badge[data-active="1"]{ opacity:1; }
+@media (max-width: 820px){
+  .boot-badge{ display:flex; }
+}
+.is-mobile-ua .boot-badge{ display:flex; }
 .layout{ display:flex; }
 .table-wrap{ display:flex; align-items:center; justify-content:center; min-height:calc(100vh - 120px); }
 .poker-table{ position:relative; width:1000px; height:640px; }
